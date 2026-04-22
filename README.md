@@ -244,6 +244,135 @@ kubectl delete secret oauth-keycloak -n agentgateway-system
 
 ---
 
+## MCP Client Authentication via Keycloak (Bearer Token Flow)
+
+The browser flow above issues a session cookie. MCP API clients (AI agents, SDKs, curl) instead use the OAuth 2.0 **Resource Owner Password Credentials** (ROPC) grant to obtain a JWT, then pass it as a `Authorization: Bearer` header on every request. AgentGateway's ExtAuth validates the JWT signature against Keycloak's JWKS endpoint without a redirect.
+
+> **Prerequisites:** Keycloak configured per the steps above. Port-forward Keycloak locally if calling from outside the cluster:
+> ```bash
+> kubectl -n keycloak port-forward svc/keycloak 8080:80 &
+> ```
+
+### Step 1 — Acquire a JWT from Keycloak (password grant)
+
+```bash
+export KEYCLOAK_URL=http://localhost:8080          # port-forwarded
+export KEYCLOAK_REALM=mcp-demo
+export KEYCLOAK_CLIENT_ID=agw-client
+export KEYCLOAK_CLIENT_SECRET=agw-client-secret
+
+TOKEN=$(curl -s -X POST \
+  "${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token" \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -d "grant_type=password" \
+  -d "username=demo@example.com" \
+  -d "password=demo-pass" \
+  -d "client_id=${KEYCLOAK_CLIENT_ID}" \
+  -d "client_secret=${KEYCLOAK_CLIENT_SECRET}" \
+  -d "scope=openid email profile" \
+  | jq -r '.access_token')
+
+echo "Token: ${TOKEN:0:60}..."
+```
+
+> **Note:** ROPC requires the client to have `Direct Access Grants` enabled in Keycloak. The user must exist in the realm.
+
+---
+
+### Step 2 — Unauthenticated request confirms ExtAuth is active
+
+```bash
+export AGW_LB=$(kubectl -n agentgateway-system get svc agentgateway-hub \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{.status.loadBalancer.ingress[0].ip}')
+
+curl -s -o /dev/null -w '%{http_code}\n' "http://${AGW_LB}/mcp"
+# Expected: 302 (redirect to Keycloak login page)
+```
+
+---
+
+### Step 3 — Initialize an MCP session with Bearer token
+
+MCP uses **StreamableHTTP** — each call is a `POST` to `/mcp`. The server returns a `Mcp-Session-Id` header on the first (`initialize`) call that must be included on all subsequent calls.
+
+```bash
+INIT_RESPONSE=$(curl -si -X POST "http://${AGW_LB}/mcp" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+      "protocolVersion": "2024-11-05",
+      "capabilities": {},
+      "clientInfo": { "name": "my-agent", "version": "1.0" }
+    }
+  }')
+
+# Extract session ID from response headers
+SESSION_ID=$(echo "${INIT_RESPONSE}" | grep -i "^mcp-session-id:" | awk '{print $2}' | tr -d '\r')
+echo "HTTP status: $(echo "${INIT_RESPONSE}" | grep "^HTTP/" | awk '{print $2}')"
+echo "Session:     ${SESSION_ID}"
+```
+
+Expected output:
+```
+HTTP status: 200
+Session:     ABCDEF1234567890...
+```
+
+---
+
+### Step 4 — List available MCP tools
+
+```bash
+curl -s -X POST "http://${AGW_LB}/mcp" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Mcp-Session-Id: ${SESSION_ID}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+  | jq '.result.tools[].name' 2>/dev/null \
+  || grep -o '"name":"[^"]*"'
+```
+
+---
+
+### Step 5 — Call an MCP tool
+
+```bash
+curl -s -X POST "http://${AGW_LB}/mcp" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Mcp-Session-Id: ${SESSION_ID}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 3,
+    "method": "tools/call",
+    "params": {
+      "name": "echo",
+      "arguments": { "message": "hello from keycloak-authed MCP client" }
+    }
+  }'
+```
+
+---
+
+### How this differs from the browser flow
+
+| | Browser flow (auth code) | MCP client flow (ROPC / Bearer) |
+|---|---|---|
+| Token issuance | Keycloak login page → redirect → session cookie | Direct POST to `/token` → JWT in response |
+| Credential holder | Browser / user | Agent / service account |
+| AGW validation | ExtAuth checks session cookie against Redis | ExtAuth validates JWT signature via JWKS |
+| Session storage | Redis (ext-cache) | Stateless — JWT carries all claims |
+| Suitable for | Human operators, dashboards | AI agents, CI pipelines, SDK clients |
+
+---
+
 ## Container Images & Helm Repositories
 
 > **Add these to your artifact repository before proceeding if operating in an air-gapped environment.**
@@ -286,31 +415,24 @@ kubectl delete secret oauth-keycloak -n agentgateway-system
 
 ### Agent Registry Enterprise Images (v0.0.13)
 
-> Image path to be confirmed from the [v0.0.13 release](https://github.com/solo-io/agentregistry-enterprise/releases/tag/v0.0.13).
-
 | Image | Full Path |
 |-------|-----------|
-| server (enterprise) | `<confirm from release — likely us-docker.pkg.dev/solo-public/agentregistry-enterprise/server:v0.0.13>` |
-| postgres (bundled, pgvector) | `docker.io/pgvector/pgvector:pg18` |
+| server (enterprise) | `us-docker.pkg.dev/agentregistry/enterprise/server:v0.0.13` |
+| postgres (bundled) | `docker.io/library/postgres:18` |
+| clickhouse (telemetry) | `clickhouse/clickhouse-server:26.2.5-alpine` |
+| otel-collector (telemetry) | `otel/opentelemetry-collector-contrib:0.148.0` |
 
 ### Agent Registry Enterprise Helm Chart
 
 | Chart | OCI Path |
 |-------|----------|
-| agentregistry (enterprise) | `<AREG_ENTERPRISE_HELM_REPO>/agentregistry --version v0.0.13` (from private release) |
+| agentregistry-enterprise | `oci://us-docker.pkg.dev/agentregistry/enterprise/helm/agentregistry-enterprise --version 0.0.13` |
 
-### Keycloak Images (Bitnami, Phase 3)
+### Dex OIDC Provider (Phase 3)
 
 | Image | Full Path |
 |-------|-----------|
-| keycloak | `docker.io/bitnami/keycloak:26.x.x` (pinned by Helm chart v24.4.11) |
-| postgresql | `docker.io/bitnami/postgresql:17.x.x` (bundled with Keycloak chart) |
-
-### Keycloak Helm Chart
-
-| Chart | OCI Path |
-|-------|----------|
-| keycloak | `oci://registry-1.docker.io/bitnamicharts/keycloak --version 24.4.11` |
+| dex | `ghcr.io/dexidp/dex:v2.42.0` |
 
 ### Bookinfo Images
 
@@ -1170,3 +1292,248 @@ kubectl logs -n agentgateway-system -l gateway.networking.k8s.io/gateway-name=ag
 ```bash
 kubectl logs -n agentgateway-system -l app=mcp-server-everything
 ```
+
+---
+
+## Cross-Cluster MCP Routes via AgentGateway
+
+AgentGateway Hub on cluster1 routes MCP traffic to backends on cluster2 using Istio's ambient mesh east-west gateway — no VPN, no sidecar injection, just HBONE tunnels through ztunnel. This section documents the YAML resources that wire it up.
+
+### How it works
+
+```
+MCP client
+  → AgentGateway Hub (cluster1, agentgateway-system)
+    → AgentgatewayBackend (static target: <svc>.mesh.internal)
+      → ztunnel (cluster1, HBONE port 15008)
+        → East-West Gateway (cluster2)
+          → ztunnel (cluster2)
+            → mcp-server-everything (cluster2, agentgateway-system)
+```
+
+The `mesh.internal` hostname is synthesized by Istio when a Service on cluster2 carries the `solo.io/service-scope=global` label. Istiod propagates a `ServiceEntry` to cluster1 so it can resolve the hostname to cluster2's east-west gateway IP.
+
+---
+
+### Step 1 — Label the remote service as global (cluster2)
+
+This makes `mcp-server-everything` discoverable across clusters as `mcp-server-everything.agentgateway-system.mesh.internal`.
+
+```bash
+kubectl --context cluster2 \
+  -n agentgateway-system \
+  label service mcp-server-everything \
+  solo.io/service-scope=global \
+  --overwrite
+
+kubectl --context cluster2 \
+  -n agentgateway-system \
+  annotate service mcp-server-everything \
+  networking.istio.io/traffic-distribution=Any \
+  --overwrite
+```
+
+Verify that Istio synthesizes the `ServiceEntry` on cluster1 (may take ~30s):
+
+```bash
+kubectl --context cluster1 get serviceentry -n istio-system | grep mcp
+# Expected: auto-generated entry for mcp-server-everything.agentgateway-system.mesh.internal
+```
+
+---
+
+### Step 2 — Create an AgentgatewayBackend for the remote target (cluster1)
+
+`AgentgatewayBackend` is the AgentGateway CRD that declares an MCP backend. The `static` target points at the `mesh.internal` FQDN resolved by Istio — traffic is automatically tunnelled via HBONE to cluster2.
+
+```yaml
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: mcp-backends-remote
+  namespace: agentgateway-system
+spec:
+  mcp:
+    failureMode: FailOpen      # keep serving other backends if this one is unavailable
+    targets:
+    - name: mcp-server-everything-remote
+      static:
+        host: mcp-server-everything.agentgateway-system.mesh.internal
+        port: 80
+```
+
+```bash
+kubectl --context cluster1 apply -f - <<'EOF'
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: mcp-backends-remote
+  namespace: agentgateway-system
+spec:
+  mcp:
+    failureMode: FailOpen
+    targets:
+    - name: mcp-server-everything-remote
+      static:
+        host: mcp-server-everything.agentgateway-system.mesh.internal
+        port: 80
+EOF
+
+kubectl --context cluster1 get agentgatewaybackend mcp-backends-remote -n agentgateway-system
+# Expected: ACCEPTED = True
+```
+
+---
+
+### Step 3 — Route /mcp/remote to the remote backend via HTTPRoute (cluster1)
+
+`HTTPRoute` attaches to the `agentgateway-hub` Gateway and matches requests by path prefix. The `backendRef` references the `AgentgatewayBackend` CRD (not a standard Kubernetes Service).
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: mcp-route-remote
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+  - name: agentgateway-hub
+    namespace: agentgateway-system
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /mcp/remote
+    backendRefs:
+    - group: agentgateway.dev          # AgentGateway CRD group — not core/v1
+      kind: AgentgatewayBackend
+      name: mcp-backends-remote
+      namespace: agentgateway-system
+```
+
+```bash
+kubectl --context cluster1 apply -f - <<'EOF'
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: mcp-route-remote
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+  - name: agentgateway-hub
+    namespace: agentgateway-system
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /mcp/remote
+    backendRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: mcp-backends-remote
+      namespace: agentgateway-system
+EOF
+```
+
+The same pattern applies for any additional backend — update the `path.value` and `name` fields to route different paths to different remote clusters or services.
+
+---
+
+### Step 4 — Wire AgentRegistry catalog via AgentGateway (cluster1)
+
+AgentRegistry Enterprise exposes its MCP catalog on port 31313. The backend and route below make the catalog discoverable through the same authenticated hub gateway at `/mcp/registry`.
+
+```yaml
+# AgentgatewayBackend — points at the AREG MCP port
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: agent-registry-backend
+  namespace: agentgateway-system
+spec:
+  mcp:
+    failureMode: FailOpen
+    targets:
+    - name: agent-registry-mcp
+      static:
+        host: agentregistry-agentregistry-enterprise.agentregistry.svc.cluster.local
+        port: 31313
+```
+
+```yaml
+# HTTPRoute — routes /mcp/registry to AgentRegistry
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: areg-mcp-route
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+  - name: agentgateway-hub
+    namespace: agentgateway-system
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /mcp/registry
+    backendRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: agent-registry-backend
+      namespace: agentgateway-system
+```
+
+---
+
+### Verifying routes
+
+```bash
+# List all HTTPRoutes on the hub gateway
+kubectl --context cluster1 get httproute -n agentgateway-system
+
+# List all AgentgatewayBackends and their acceptance status
+kubectl --context cluster1 get agentgatewaybackend -n agentgateway-system
+
+# Test cross-cluster route (should return 200 or 400 for a bare GET — MCP requires POST)
+TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
+  -d 'grant_type=password&username=demo@example.com&password=demo-pass' \
+  -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
+  | jq -r '.access_token')
+
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer ${TOKEN}" \
+  "http://${AGW_LB}/mcp/remote"
+
+# Test AgentRegistry catalog route
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer ${TOKEN}" \
+  "http://${AGW_LB}/mcp/registry"
+```
+
+---
+
+### Failover demo — force cross-cluster routing
+
+Scale cluster1's MCP server to zero replicas so all `/mcp` traffic is forced through cluster2:
+
+```bash
+# Scale down cluster1 local MCP server
+kubectl --context cluster1 -n agentgateway-system scale deploy/mcp-server-everything --replicas=0
+
+# /mcp/remote still responds — cluster2 is serving via ambient east-west gateway
+curl -s -X POST "http://${AGW_LB}/mcp/remote" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"failover-test","version":"1.0"}}}'
+
+# Restore cluster1 replicas
+kubectl --context cluster1 -n agentgateway-system scale deploy/mcp-server-everything --replicas=1
+```
+
+### Key points
+
+- `AgentgatewayBackend` uses `spec.mcp.targets[].static.{host, port}` — there is no `endpoint` field.
+- HTTPRoute `backendRefs` for AgentGateway backends must set `group: agentgateway.dev` and `kind: AgentgatewayBackend` — not the default `Service` kind.
+- `failureMode: FailOpen` means if the remote target is unreachable, AgentGateway continues serving other backends rather than returning 503. Use `FailClosed` in production if strict isolation is required.
+- The `mesh.internal` FQDN only resolves from within the ambient mesh. Do not use it in port-forward scenarios — route through the hub gateway instead.
