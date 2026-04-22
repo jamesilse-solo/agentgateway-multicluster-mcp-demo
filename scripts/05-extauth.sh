@@ -2,17 +2,18 @@
 set -euo pipefail
 
 ###############################################################################
-# 05-extauth.sh — Enable Dex OIDC ExtAuth on AgentGateway Hub
+# 05-extauth.sh — Authentication (Flow 1: User Auth via Dex OIDC ExtAuth)
 #
-# Configures AgentGateway Enterprise ExtAuth to use Dex as the OIDC provider,
-# protecting all MCP traffic entering the hub gateway.
+# Implements Flow 1 (User Auth): configures ExtAuth + Redis to enforce Dex
+# OIDC on the AgentGateway Hub.
+# Unauthenticated browser requests receive 302 redirect to Dex login;
+# MCP clients use Bearer JWT from Dex.
 #
-# Supports two auth flows for the demo:
-#   1. Browser login flow: unauthenticated request → 302 → Dex login page
-#   2. MCP client flow:    get token from Dex → pass as Bearer → 200 OK
+# For Flow 2 (MCP Auth with dynamic discovery) see the README — requires
+# Keycloak or Auth0 (Dex does not support MCP OAuth dynamic client registration).
 #
 # Prerequisites:
-#   - 03-dex.sh has run (Dex is deployed)
+#   - 03-dex.sh has run (Dex is deployed and running)
 #   - AgentGateway Enterprise is installed with ExtAuth + ExtCache running
 #   - Hub gateway (agentgateway-hub) exists (02-configure.sh)
 #

@@ -99,7 +99,7 @@ pause
 ###############################################################################
 # SECTION 1 — OIDC AUTH (BROWSER FLOW)
 ###############################################################################
-banner "Act 1 — OIDC Auth: AgentGateway + Dex"
+banner "Flow 1 — User Auth: Browser Redirect (302 → Dex)"
 
 info "AgentGateway is protecting all MCP traffic with OIDC via Dex."
 info "An unauthenticated request to /mcp gets redirected to the Dex login page."
@@ -121,7 +121,7 @@ pause
 ###############################################################################
 # SECTION 2 — OIDC AUTH (MCP CLIENT BEARER TOKEN FLOW + FULL MCP SESSION)
 ###############################################################################
-banner "Act 2 — Authenticated MCP Session via Dex"
+banner "Flow 2 — MCP Client Auth: Bearer Token Session"
 
 info "MCP API clients (AI agents, SDKs) use the password grant to get a JWT"
 info "from Dex and pass it as a Bearer token. AgentGateway's ExtAuth validates"
@@ -204,6 +204,8 @@ if [[ -n "${TOKEN}" ]]; then
     else
       warn "No tools returned — check backend MCP server is running"
     fi
+    echo ""
+    info "Note: for full MCP OAuth discovery (Claude Code/VS Code auto-registration), use Keycloak with AgentgatewayPolicy + jwtAuthentication + mcp extension"
     echo ""
   fi
 fi

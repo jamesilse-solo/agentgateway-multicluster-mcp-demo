@@ -65,25 +65,34 @@ graph TB
 
 ---
 
-## OIDC ExtAuth with AgentGateway Enterprise + Existing Keycloak IDP
+## Authentication with AgentGateway + Keycloak
 
-Connects AgentGateway Enterprise's ExtAuth to an already-running Keycloak instance using the OIDC authorization code flow. Assumes Keycloak has an existing realm and confidential client configured.
+AgentGateway supports two authentication flows for MCP traffic. Use the one that matches your client type.
 
-### Prerequisites
-
-- AgentGateway Enterprise installed with `extauth` and `extCache` (Redis) enabled in `EnterpriseAgentgatewayParameters`.
-- An existing Keycloak realm and confidential client. Set these env vars:
-
-  ```bash
-  export KEYCLOAK_URL=http://keycloak.keycloak.svc.cluster.local:8080   # internal cluster URL
-  export KEYCLOAK_REALM=my-realm
-  export KEYCLOAK_CLIENT_ID=agw-client
-  export KEYCLOAK_CLIENT_SECRET=agw-client-secret
-  export INGRESS_GW_ADDRESS=$(kubectl -n agentgateway-system get svc agentgateway-proxy \
-    -o jsonpath='{.status.loadBalancer.ingress[0].ip}{.status.loadBalancer.ingress[0].hostname}')
-  ```
+| | Flow 1: User auth | Flow 2: MCP auth |
+|---|---|---|
+| **Who uses it** | Human operators, browsers, dashboards | MCP clients — Claude Code, VS Code, MCP Inspector |
+| **Mechanism** | OIDC authorization code (browser redirect + session cookie) | MCP OAuth — dynamic discovery → client registration → JWT |
+| **AGW config** | `EnterpriseAgentgatewayPolicy` → `entExtAuth` → `AuthConfig` | `AgentgatewayPolicy` → `jwtAuthentication` + `mcp` extension |
+| **Token storage** | Redis session (ext-cache) | Stateless JWT, validated against Keycloak JWKS |
+| **Redirect on unauthed** | 302 → Keycloak login page | 401 + `WWW-Authenticate` header (MCP discovery) |
 
 ---
+
+## Flow 1 — User Auth (OIDC Authorization Code)
+
+For human operators accessing MCP via a browser or dashboard. An unauthenticated request redirects to the Keycloak login page; after login a session cookie is issued and stored in Redis.
+
+**Prerequisites:** AgentGateway Enterprise with `extAuth` and `extCache` (Redis) enabled. Set env vars:
+
+```bash
+export KEYCLOAK_URL=http://keycloak.keycloak.svc.cluster.local:8080
+export KEYCLOAK_REALM=mcp-demo
+export KEYCLOAK_CLIENT_ID=agw-client
+export KEYCLOAK_CLIENT_SECRET=agw-client-secret
+export AGW_LB=$(kubectl -n agentgateway-system get svc agentgateway-hub \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{.status.loadBalancer.ingress[0].ip}')
+```
 
 ### Step 1 — Store the client secret
 
@@ -100,35 +109,9 @@ stringData:
 EOF
 ```
 
----
-
-### Step 2 — Create an AgentgatewayBackend pointing at Keycloak
+### Step 2 — Create the AuthConfig
 
 ```yaml
-# manifests/base/keycloak-backend.yaml
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayBackend
-metadata:
-  name: keycloak-jwks
-  namespace: agentgateway-system
-spec:
-  static:
-    host: keycloak.keycloak.svc.cluster.local   # update to your Keycloak service FQDN
-    port: 8080
-```
-
-```bash
-kubectl apply -f manifests/base/keycloak-backend.yaml
-```
-
----
-
-### Step 3 — Create the AuthConfig
-
-AgentGateway auto-discovers OIDC config from `${issuerUrl}/.well-known/openid-configuration`. Sessions are stored in the Redis instance deployed by `extCache`.
-
-```yaml
-# manifests/base/authconfig-oidc-keycloak.yaml
 apiVersion: extauth.solo.io/v1
 kind: AuthConfig
 metadata:
@@ -138,7 +121,7 @@ spec:
   configs:
   - oauth2:
       oidcAuthorizationCode:
-        appUrl: "http://${INGRESS_GW_ADDRESS}:8080"
+        appUrl: "http://${AGW_LB}"
         callbackPath: /callback
         clientId: ${KEYCLOAK_CLIENT_ID}
         clientSecretRef:
@@ -146,6 +129,7 @@ spec:
           namespace: agentgateway-system
         issuerUrl: "${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/"
         scopes:
+        - openid
         - email
         - profile
         session:
@@ -155,21 +139,18 @@ spec:
             options:
               host: ext-cache-enterprise-agentgateway:6379
         headers:
-          idTokenHeader: jwt   # forwards the ID token downstream as the 'jwt' header
+          idTokenHeader: x-user-token
 ```
 
 ```bash
-kubectl apply -f manifests/base/authconfig-oidc-keycloak.yaml
+kubectl apply -f authconfig-oidc-keycloak.yaml
 kubectl get authconfig oidc-keycloak -n agentgateway-system -o jsonpath='{.status.state}'
-# Expected: ACCEPTED
+# Expected: Accepted
 ```
 
----
-
-### Step 4 — Attach the AuthConfig to the Gateway
+### Step 3 — Attach the AuthConfig to the Gateway
 
 ```yaml
-# manifests/base/policy-oidc-extauth.yaml
 apiVersion: enterpriseagentgateway.solo.io/v1alpha1
 kind: EnterpriseAgentgatewayPolicy
 metadata:
@@ -179,7 +160,7 @@ spec:
   targetRefs:
   - group: gateway.networking.k8s.io
     kind: Gateway
-    name: agentgateway-proxy
+    name: agentgateway-hub
   traffic:
     entExtAuth:
       authConfigRef:
@@ -191,41 +172,16 @@ spec:
         port: 8083
 ```
 
+### Step 4 — Verify
+
 ```bash
-kubectl apply -f manifests/base/policy-oidc-extauth.yaml
+# Unauthenticated → 302 redirect to Keycloak login page
+curl -s -o /dev/null -w '%{http_code}\n' "http://${AGW_LB}/mcp"
+# Expected: 302
+
+# Location header points to Keycloak
+curl -sI "http://${AGW_LB}/mcp" | grep -i location
 ```
-
----
-
-### Step 5 — Test the flow
-
-**Unauthenticated — expect 302 redirect to Keycloak:**
-```bash
-curl -v "http://${INGRESS_GW_ADDRESS}:8080/openai" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}'
-# Expected: HTTP/1.1 302 → Location: ${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/auth?...
-```
-
-**Get a token directly (for API/machine-to-machine testing):**
-```bash
-TOKEN=$(curl -s -X POST "${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=alice&password=alice&grant_type=password" \
-  -d "client_id=${KEYCLOAK_CLIENT_ID}&client_secret=${KEYCLOAK_CLIENT_SECRET}" \
-  | jq -r '.access_token')
-```
-
-**Authenticated request:**
-```bash
-curl -s "http://${INGRESS_GW_ADDRESS}:8080/openai" \
-  -H "Authorization: Bearer ${TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}'
-# Expected: 200 OK
-```
-
----
 
 ### Cleanup
 
@@ -235,141 +191,133 @@ kubectl delete enterpriseagentgatewaypolicy oidc-extauth -n agentgateway-system
 kubectl delete secret oauth-keycloak -n agentgateway-system
 ```
 
-### Reference
-
-- [Solo docs — About OAuth/OIDC for AgentGateway](https://docs.solo.io/agentgateway/2.2.x/security/extauth/oauth/about/)
-- [Solo docs — Authorization code flow](https://docs.solo.io/agentgateway/2.2.x/security/extauth/oauth/authorization-code/)
-- [Solo docs — Keycloak as an IdP](https://docs.solo.io/agentgateway/2.2.x/security/extauth/oauth/keycloak/)
-- [Solo docs — BYO ext auth service](https://docs.solo.io/agentgateway/2.2.x/security/extauth/byo-ext-auth-service/)
-
 ---
 
-## MCP Client Authentication via Keycloak (Bearer Token Flow)
+## Flow 2 — MCP Auth (AgentgatewayPolicy + jwtAuthentication)
 
-The browser flow above issues a session cookie. MCP API clients (AI agents, SDKs, curl) instead use the OAuth 2.0 **Resource Owner Password Credentials** (ROPC) grant to obtain a JWT, then pass it as a `Authorization: Bearer` header on every request. AgentGateway's ExtAuth validates the JWT signature against Keycloak's JWKS endpoint without a redirect.
+For MCP clients such as Claude Code, VS Code with MCP extensions, and MCP Inspector. These clients implement the MCP OAuth 2.0 specification: they discover the authorization server automatically from the gateway, register as a dynamic client with Keycloak, complete the authorization code flow, and then connect using a Bearer JWT — all without manual token handling.
 
-> **Prerequisites:** Keycloak configured per the steps above. Port-forward Keycloak locally if calling from outside the cluster:
-> ```bash
-> kubectl -n keycloak port-forward svc/keycloak 8080:80 &
-> ```
+An unauthenticated MCP client receives `401 Unauthorized` with a `WWW-Authenticate` header pointing to the discovery endpoint. The client uses that to locate Keycloak and complete the flow autonomously.
 
-### Step 1 — Acquire a JWT from Keycloak (password grant)
+**Prerequisites:** Keycloak realm configured with a client that allows dynamic client registration, and the Keycloak JWKS path. Set env vars:
 
 ```bash
-export KEYCLOAK_URL=http://localhost:8080          # port-forwarded
+export KEYCLOAK_URL=http://keycloak.keycloak.svc.cluster.local:8080
 export KEYCLOAK_REALM=mcp-demo
-export KEYCLOAK_CLIENT_ID=agw-client
-export KEYCLOAK_CLIENT_SECRET=agw-client-secret
-
-TOKEN=$(curl -s -X POST \
-  "${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token" \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  -d "grant_type=password" \
-  -d "username=demo@example.com" \
-  -d "password=demo-pass" \
-  -d "client_id=${KEYCLOAK_CLIENT_ID}" \
-  -d "client_secret=${KEYCLOAK_CLIENT_SECRET}" \
-  -d "scope=openid email profile" \
-  | jq -r '.access_token')
-
-echo "Token: ${TOKEN:0:60}..."
-```
-
-> **Note:** ROPC requires the client to have `Direct Access Grants` enabled in Keycloak. The user must exist in the realm.
-
----
-
-### Step 2 — Unauthenticated request confirms ExtAuth is active
-
-```bash
+export KEYCLOAK_ISSUER="${KEYCLOAK_URL}/realms/${KEYCLOAK_REALM}"
+export KEYCLOAK_JWKS_PATH="/realms/${KEYCLOAK_REALM}/protocol/openid-connect/certs"
 export AGW_LB=$(kubectl -n agentgateway-system get svc agentgateway-hub \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{.status.loadBalancer.ingress[0].ip}')
-
-curl -s -o /dev/null -w '%{http_code}\n' "http://${AGW_LB}/mcp"
-# Expected: 302 (redirect to Keycloak login page)
 ```
 
----
+### Step 1 — Apply the AgentgatewayPolicy
 
-### Step 3 — Initialize an MCP session with Bearer token
+`jwtAuthentication` validates Bearer JWTs from Keycloak. The `mcp` block enables the MCP OAuth discovery endpoints and tells AgentGateway to use Keycloak-specific endpoint handling (Keycloak does not fully implement standard dynamic client registration).
 
-MCP uses **StreamableHTTP** — each call is a `POST` to `/mcp`. The server returns a `Mcp-Session-Id` header on the first (`initialize`) call that must be included on all subsequent calls.
+```yaml
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: mcp-authn
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: mcp-route
+  traffic:
+    jwtAuthentication:
+      mode: Strict
+      providers:
+      - issuer: "${KEYCLOAK_ISSUER}"
+        audiences:
+        - "http://${AGW_LB}/mcp"
+        jwks:
+          remote:
+            backendRef:
+              name: keycloak
+              kind: Service
+              namespace: keycloak
+              port: 8080
+            jwksPath: "${KEYCLOAK_JWKS_PATH}"
+      mcp:
+        provider: Keycloak
+        resourceMetadata:
+          resource: "http://${AGW_LB}/mcp"
+          scopesSupported:
+          - openid
+          - email
+          - profile
+          bearerMethodsSupported:
+          - header
+          - body
+          - query
+```
 
 ```bash
-INIT_RESPONSE=$(curl -si -X POST "http://${AGW_LB}/mcp" \
-  -H "Authorization: Bearer ${TOKEN}" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {
-      "protocolVersion": "2024-11-05",
-      "capabilities": {},
-      "clientInfo": { "name": "my-agent", "version": "1.0" }
-    }
-  }')
-
-# Extract session ID from response headers
-SESSION_ID=$(echo "${INIT_RESPONSE}" | grep -i "^mcp-session-id:" | awk '{print $2}' | tr -d '\r')
-echo "HTTP status: $(echo "${INIT_RESPONSE}" | grep "^HTTP/" | awk '{print $2}')"
-echo "Session:     ${SESSION_ID}"
+kubectl apply -f mcp-authn-policy.yaml
+kubectl get agentgatewaypolicy mcp-authn -n agentgateway-system
 ```
 
-Expected output:
-```
-HTTP status: 200
-Session:     ABCDEF1234567890...
+### Step 2 — Update HTTPRoute to expose discovery paths
+
+The MCP OAuth flow requires two well-known discovery paths on the gateway. Add them to the existing MCP HTTPRoute so clients can locate the authorization server.
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: mcp-route
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+  - name: agentgateway-hub
+    namespace: agentgateway-system
+  rules:
+  - backendRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: mcp-backends
+    matches:
+    - path:
+        type: PathPrefix
+        value: /mcp
+    - path:
+        type: PathPrefix
+        value: /.well-known/oauth-protected-resource/mcp   # MCP resource metadata discovery
+    - path:
+        type: PathPrefix
+        value: /.well-known/oauth-authorization-server/mcp  # MCP auth server discovery
+    - path:
+        type: PathPrefix
+        value: /realms/mcp-demo/protocol/openid-connect/certs  # Keycloak JWKS (proxied)
 ```
 
----
+### Step 3 — Verify with MCP Inspector
 
-### Step 4 — List available MCP tools
+Point MCP Inspector at `http://${AGW_LB}/mcp`. On first connection it will:
+
+1. Receive `401` with `WWW-Authenticate` pointing to `/.well-known/oauth-protected-resource/mcp`
+2. Discover the authorization server metadata
+3. Register as a dynamic client with Keycloak
+4. Complete authorization code flow (browser login)
+5. Reconnect with Bearer token — tools are now accessible
 
 ```bash
-curl -s -X POST "http://${AGW_LB}/mcp" \
-  -H "Authorization: Bearer ${TOKEN}" \
-  -H "Mcp-Session-Id: ${SESSION_ID}" \
+# Unauthenticated → 401 with WWW-Authenticate header (not 302)
+curl -si "http://${AGW_LB}/mcp" \
   -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
-  | jq '.result.tools[].name' 2>/dev/null \
-  || grep -o '"name":"[^"]*"'
+  | grep -E "^HTTP/|^WWW-Authenticate:"
+# Expected:
+# HTTP/1.1 401 Unauthorized
+# WWW-Authenticate: Bearer realm="...", resource_metadata="http://${AGW_LB}/.well-known/oauth-protected-resource/mcp"
 ```
 
----
+### Reference
 
-### Step 5 — Call an MCP tool
-
-```bash
-curl -s -X POST "http://${AGW_LB}/mcp" \
-  -H "Authorization: Bearer ${TOKEN}" \
-  -H "Mcp-Session-Id: ${SESSION_ID}" \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 3,
-    "method": "tools/call",
-    "params": {
-      "name": "echo",
-      "arguments": { "message": "hello from keycloak-authed MCP client" }
-    }
-  }'
-```
-
----
-
-### How this differs from the browser flow
-
-| | Browser flow (auth code) | MCP client flow (ROPC / Bearer) |
-|---|---|---|
-| Token issuance | Keycloak login page → redirect → session cookie | Direct POST to `/token` → JWT in response |
-| Credential holder | Browser / user | Agent / service account |
-| AGW validation | ExtAuth checks session cookie against Redis | ExtAuth validates JWT signature via JWKS |
-| Session storage | Redis (ext-cache) | Stateless — JWT carries all claims |
-| Suitable for | Human operators, dashboards | AI agents, CI pipelines, SDK clients |
+- [AgentGateway — MCP Auth vs JWT Auth](https://agentgateway.dev/docs/kubernetes/main/mcp/auth/about/#mcp-auth-vs-jwt-auth)
+- [AgentGateway — Set up MCP Auth](https://agentgateway.dev/docs/kubernetes/main/mcp/auth/setup/)
+- [AgentGateway — Keycloak setup for MCP Auth](https://agentgateway.dev/docs/kubernetes/main/mcp/auth/keycloak/)
 
 ---
 
@@ -795,55 +743,65 @@ export GATEWAY_ROLE=spoke
 
 ---
 
-## Phase 3: Keycloak Deployment (`scripts/03-keycloak.sh`)
+## Phase 3: Dex OIDC Provider (`scripts/03-dex.sh`)
 
-Deploys Keycloak (Bitnami) on cluster1 and configures a demo realm, OIDC client, and test user for protecting MCP endpoints. Run after Phase 2 on both clusters.
+Deploys [Dex](https://dexidp.io/) v2.42.0 on cluster1 as a lightweight OIDC provider using plain Kubernetes manifests (no Helm). Dex acts as the identity provider for both Flow 1 (user auth via ExtAuth) and Bearer token validation. Run after Phase 2, before Phase 5.
+
+> **Flow 2 (MCP Auth with dynamic discovery)**: If you need MCP clients such as Claude Code or MCP Inspector to auto-discover and self-register with the IdP (the full MCP OAuth flow), replace Dex with Keycloak or Auth0. See the [Authentication section](#authentication-with-agentgateway--keycloak) at the top of this document. Dex does not implement dynamic client registration as required by the MCP OAuth spec.
 
 ### Parameters
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `KUBE_CONTEXT` | No | `cluster1` | kubectl context |
-| `KC_ADMIN_USER` | No | `admin` | Keycloak admin username |
-| `KC_ADMIN_PASSWORD` | No | `admin123` | Keycloak admin password — **change for real use** |
-| `KC_REALM` | No | `mcp-demo` | Realm name |
-| `KC_CLIENT_ID` | No | `agw-client` | OIDC client ID (used by AgentGateway) |
-| `KC_CLIENT_SECRET` | No | `agw-client-secret` | OIDC client secret — **change for real use** |
-| `KC_TEST_USER` | No | `demo-user` | Demo user username |
-| `KC_TEST_PASSWORD` | No | `demo-pass` | Demo user password |
-| `KC_HELM_VERSION` | No | `24.4.11` | Bitnami Keycloak Helm chart version |
+| `DEX_NAMESPACE` | No | `dex` | Namespace to deploy Dex into |
+| `DEX_CLIENT_ID` | No | `agw-client` | OIDC client ID used by AgentGateway |
+| `DEX_CLIENT_SECRET` | No | `agw-client-secret` | OIDC client secret — **change for real use** |
+| `DEX_USER_EMAIL` | No | `demo@example.com` | Demo user email |
+| `DEX_USER_PASSWORD` | No | `demo-pass` | Demo user password — **change for real use** |
+| `DEX_USER_NAME` | No | `demo-user` | Demo user display name |
+| `AGW_LB` | No | — | AgentGateway LB address (added to Dex redirect URIs) |
 
 ### Example
 
 ```bash
 export KUBE_CONTEXT=cluster1
-export KC_ADMIN_PASSWORD=<secure-password>
-export KC_CLIENT_SECRET=<secure-secret>
 
-./scripts/03-keycloak.sh
+./scripts/03-dex.sh
 ```
 
 ### What it creates
 
-- `keycloak` namespace (enrolled in ambient mesh)
-- Keycloak pod + bundled PostgreSQL (Bitnami chart)
-- Realm `mcp-demo` with OIDC client `agw-client`
-- Test user `demo-user` / `demo-pass`
+- `dex` namespace (enrolled in ambient mesh)
+- `dex-config` ConfigMap — Dex config with static OIDC clients and a hashed demo user password
+- `dex` Deployment running `ghcr.io/dexidp/dex:v2.42.0`
+- `dex` ClusterIP Service on port 5556
 
-### Access Keycloak Admin UI
+### Access
 
 ```bash
-kubectl --context cluster1 -n keycloak port-forward svc/keycloak 8081:80
-# Open: http://localhost:8081  (admin / <KC_ADMIN_PASSWORD>)
+# Port-forward Dex locally (for token acquisition in demo/testing)
+kubectl --context cluster1 -n dex port-forward svc/dex 5556:5556
+
+# Verify OIDC discovery endpoint
+curl http://localhost:5556/dex/.well-known/openid-configuration | jq .issuer
+# Expected: "http://dex.dex.svc.cluster.local:5556/dex"
+
+# Acquire a JWT (password grant — for MCP client / service-to-service use)
+TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -d 'grant_type=password&username=demo@example.com&password=demo-pass' \
+  -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
+  | jq -r '.access_token')
 ```
 
-### Keycloak internal URL (for AgentGateway)
+### Dex internal URL (for AgentGateway)
 
 ```
-http://keycloak.keycloak.svc.cluster.local:80
+http://dex.dex.svc.cluster.local:5556/dex
 ```
 
-OIDC discovery: `http://keycloak.keycloak.svc.cluster.local:80/realms/mcp-demo/.well-known/openid-configuration`
+OIDC discovery: `http://dex.dex.svc.cluster.local:5556/dex/.well-known/openid-configuration`
 
 ---
 
@@ -851,27 +809,24 @@ OIDC discovery: `http://keycloak.keycloak.svc.cluster.local:80/realms/mcp-demo/.
 
 Upgrades the community AgentRegistry (0.2.1) to **AgentRegistry Enterprise v0.0.13** and connects it to AgentGateway as a backend discovery source.
 
-> **Required**: Set `AREG_ENTERPRISE_HELM_REPO` to the OCI chart path from the
-> [v0.0.13 release](https://github.com/solo-io/agentregistry-enterprise/releases/tag/v0.0.13)
-> before running.
-
 ### Parameters
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `AREG_ENTERPRISE_HELM_REPO` | **Yes** | — | OCI path for enterprise chart (from private release) |
-| `AREG_ENTERPRISE_VERSION` | No | `v0.0.13` | Chart version |
 | `KUBE_CONTEXT` | No | `cluster1` | kubectl context |
-| `AGENTGATEWAY_LICENSE_KEY` | No | — | License key (if required by enterprise chart) |
+| `AREG_NAMESPACE` | No | `agentregistry` | Namespace for AgentRegistry |
+| `AREG_HELM_REPO` | No | `oci://us-docker.pkg.dev/agentregistry/enterprise/helm/agentregistry-enterprise` | OCI chart path |
+| `AREG_VERSION` | No | `0.0.13` | Chart version (no `v` prefix) |
+| `AREG_JWT_KEY` | No | _(random)_ | JWT signing key — set to a stable value to avoid session invalidation on re-runs |
+| `DEX_CLIENT_ID` | No | `agw-client` | Dex OIDC client ID used by AgentRegistry |
+| `DEX_CLIENT_SECRET` | No | `agw-client-secret` | Dex OIDC client secret |
 
 ### Example
 
 ```bash
 export KUBE_CONTEXT=cluster1
-# Set to actual OCI path from v0.0.13 release notes:
-export AREG_ENTERPRISE_HELM_REPO=oci://us-docker.pkg.dev/solo-public/agentregistry-enterprise/charts
-export AREG_ENTERPRISE_VERSION=v0.0.13
-export AGENTGATEWAY_LICENSE_KEY=<key-if-required>
+# Optional: pin the JWT key so re-runs don't invalidate existing sessions
+export AREG_JWT_KEY=$(openssl rand -hex 32)
 
 ./scripts/04-areg-enterprise.sh
 ```
@@ -880,13 +835,19 @@ export AGENTGATEWAY_LICENSE_KEY=<key-if-required>
 
 1. `helm upgrade --install agentregistry` in the existing `agentregistry` namespace (existing PVC preserved)
 2. Keeps bundled PostgreSQL/pgvector, enables built-in seed data (363 MCP server catalog)
-3. Creates `AgentgatewayBackend` resource wiring AREG gRPC port (21212) to AgentGateway
+3. Creates `AgentgatewayBackend` wiring AREG MCP port (31313) to AgentGateway at `/mcp/registry`
+4. Creates `HTTPRoute` routing `/mcp/registry` → the AREG backend through the hub gateway
 
 ### Access AgentRegistry UI
 
 ```bash
-kubectl --context cluster1 -n agentregistry port-forward svc/agentregistry 12121:12121
-# Open: http://localhost:12121
+# UI (port 8080)
+kubectl --context cluster1 -n agentregistry port-forward svc/agentregistry-agentregistry-enterprise 8080:8080
+# Open: http://localhost:8080
+
+# MCP endpoint (port 31313) — requires Bearer token
+kubectl --context cluster1 -n agentregistry port-forward svc/agentregistry-agentregistry-enterprise 31313:31313
+# POST http://localhost:31313/mcp with Authorization: Bearer <token>
 ```
 
 > The built-in seed data populates ~363 MCP server entries. Disable with
@@ -894,14 +855,16 @@ kubectl --context cluster1 -n agentregistry port-forward svc/agentregistry 12121
 
 ---
 
-## Phase 5: ExtAuth + OIDC (`scripts/05-extauth.sh`)
+## Phase 5: Authentication (`scripts/05-extauth.sh`)
 
-Enables the ExtAuth + Redis sidecar on AgentGateway Hub and configures Keycloak OIDC authorization code flow to protect all MCP traffic.
+Configures **Flow 1 (User Auth)** on the AgentGateway Hub: the ExtAuth sidecar + Redis validate Dex OIDC sessions. Unauthenticated browser requests receive a 302 redirect to the Dex login page; authenticated requests (Bearer token or session cookie) pass through to the MCP backend.
+
+> **Flow 2 (MCP Auth)**: See the [Authentication section](#authentication-with-agentgateway--keycloak) at the top of this document. Full MCP OAuth dynamic discovery (for Claude Code, VS Code, MCP Inspector) requires replacing Dex with Keycloak or Auth0 and using `AgentgatewayPolicy` with `jwtAuthentication` + `mcp` extension.
 
 ### Prerequisites
 
-- Phase 3 (Keycloak) must be complete
-- The same `KC_CLIENT_SECRET` used in Phase 3 must be used here
+- Phase 3 (`03-dex.sh`) must be complete — Dex must be running
+- `AGENTGATEWAY_LICENSE_KEY` must be set
 
 ### Parameters
 
@@ -909,51 +872,54 @@ Enables the ExtAuth + Redis sidecar on AgentGateway Hub and configures Keycloak 
 |----------|----------|---------|-------------|
 | `AGENTGATEWAY_LICENSE_KEY` | **Yes** | — | AGW Enterprise license key |
 | `KUBE_CONTEXT` | No | `cluster1` | kubectl context |
-| `KC_REALM` | No | `mcp-demo` | Keycloak realm (must match Phase 3) |
-| `KC_CLIENT_ID` | No | `agw-client` | OIDC client ID (must match Phase 3) |
-| `KC_CLIENT_SECRET` | No | `agw-client-secret` | Client secret (must match Phase 3) |
+| `DEX_NAMESPACE` | No | `dex` | Namespace where Dex is running |
+| `DEX_CLIENT_ID` | No | `agw-client` | Dex OIDC client ID (must match Phase 3) |
+| `DEX_CLIENT_SECRET` | No | `agw-client-secret` | Dex client secret (must match Phase 3) |
 | `AGW_VERSION` | No | `v2.3.0-rc.3` | AgentGateway Enterprise version |
-| `DEMO_APP_URL` | No | `http://localhost:8080` | Public URL of AgentGateway for OIDC callback |
 
 ### Example
 
 ```bash
 export KUBE_CONTEXT=cluster1
 export AGENTGATEWAY_LICENSE_KEY=<key>
-export KC_CLIENT_SECRET=<secret-from-phase-3>
 
 ./scripts/05-extauth.sh
 ```
 
 ### What it creates
 
-- `enterprise-agentgateway` Helm release upgraded with `extAuth.enabled=true` + `extCache.enabled=true`
-- `oauth-keycloak` Secret (Keycloak client secret)
-- `keycloak-backend` AgentgatewayBackend (static route to Keycloak)
-- `oidc-keycloak` AuthConfig (OIDC authorization code flow)
-- `oidc-extauth` EnterpriseAgentgatewayPolicy (attaches auth to `agentgateway-hub`)
+- `oauth-dex` Secret — Dex client secret
+- `dex-backend` AgentgatewayBackend — static route to Dex service
+- `oidc-dex` AuthConfig — OIDC authorization code flow via Dex
+- `oidc-extauth` EnterpriseAgentgatewayPolicy — attaches ExtAuth to `agentgateway-hub` Gateway
 
 ### Test the auth flow
 
 ```bash
 # Port-forward hub gateway
-kubectl --context cluster1 -n agentgateway-system port-forward svc/agentgateway-hub 8080:80
+kubectl --context cluster1 -n agentgateway-system port-forward svc/agentgateway-hub 8080:80 &
 
-# Port-forward Keycloak (for token acquisition)
-kubectl --context cluster1 -n keycloak port-forward svc/keycloak 8081:80
+# Port-forward Dex (for token acquisition)
+kubectl --context cluster1 -n dex port-forward svc/dex 5556:5556 &
 
-# 1. Unauthenticated — expect HTTP 302 → Keycloak
-curl -v http://localhost:8080/mcp 2>&1 | grep -E 'HTTP|Location'
+# Flow 1 — Unauthenticated browser request → 302 redirect to Dex login page
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/mcp
+# Expected: 302
 
-# 2. Get token
-TOKEN=$(curl -s -X POST 'http://localhost:8081/realms/mcp-demo/protocol/openid-connect/token' \
+# MCP client — acquire JWT from Dex (password grant)
+TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
   -H 'Content-Type: application/x-www-form-urlencoded' \
-  -d 'username=demo-user&password=demo-pass&grant_type=password' \
-  -d 'client_id=agw-client&client_secret=agw-client-secret' \
+  -d 'grant_type=password&username=demo@example.com&password=demo-pass' \
+  -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
   | jq -r '.access_token')
 
-# 3. Authenticated — expect 200 OK
-curl -s -H "Authorization: Bearer ${TOKEN}" http://localhost:8080/mcp
+# Authenticated MCP initialize — 200 OK + Mcp-Session-Id header
+curl -si -X POST http://localhost:8080/mcp \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"demo","version":"1.0"}}}' \
+  | grep -E "^HTTP/|^Mcp-Session-Id:"
 ```
 
 ---
@@ -1016,7 +982,7 @@ kubectl --context cluster1 -n agentgateway-system scale deploy mcp-server-everyt
 
 ```
 MCP Client
-  → AgentGateway Hub (cluster1)   ← Keycloak OIDC auth enforced here
+  → AgentGateway Hub (cluster1)   ← Dex OIDC auth enforced here (Flow 1)
     → ztunnel (cluster1)           ← HBONE mTLS tunnel (SPIFFE identity)
       → East-West Gateway (cluster1)
         → East-West Gateway (cluster2)
@@ -1030,47 +996,75 @@ Red Hat Service Mesh cannot use AGW as a waypoint for this east-west path.
 
 ## Demo Script
 
-After all phases are complete, run the demo in this order:
+After all phases complete, run the interactive demo (`scripts/demo.sh`) or follow the steps manually.
+
+### Setup
 
 ```bash
 # Terminal 1: Hub gateway
 kubectl --context cluster1 -n agentgateway-system port-forward svc/agentgateway-hub 8080:80
 
 # Terminal 2: AgentRegistry UI
-kubectl --context cluster1 -n agentregistry port-forward svc/agentregistry 12121:12121
+kubectl --context cluster1 -n agentregistry port-forward svc/agentregistry-agentregistry-enterprise 8080:8080
 
-# Terminal 3: Keycloak (for token acquisition)
-kubectl --context cluster1 -n keycloak port-forward svc/keycloak 8081:80
+# Terminal 3: Dex (for token acquisition)
+kubectl --context cluster1 -n dex port-forward svc/dex 5556:5556
 ```
 
 **Step 1 — Show AgentRegistry catalog**
-- Open http://localhost:12121
+- Open http://localhost:8080 (AgentRegistry UI)
 - Show the MCP server catalog (~363 registered servers from seed data)
 - Explain: central registry of AI capabilities, self-service onboarding per BU
 
-**Step 2 — Show auth enforcement**
-- Open MCP Inspector or run `curl http://localhost:8080/mcp`
-- Show HTTP 302 redirect to Keycloak login page
-- Explain: every MCP call requires identity, enforced at the gateway
-
-**Step 3 — Authenticated MCP call (local)**
+**Step 2 — Flow 1: User auth enforcement (browser redirect)**
 ```bash
-TOKEN=$(curl -s -X POST 'http://localhost:8081/realms/mcp-demo/protocol/openid-connect/token' \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  -d 'username=demo-user&password=demo-pass&grant_type=password' \
-  -d 'client_id=agw-client&client_secret=agw-client-secret' \
-  | jq -r '.access_token')
-curl -s -H "Authorization: Bearer ${TOKEN}" http://localhost:8080/mcp
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/mcp
+# Expected: 302 → Dex login page
 ```
-- Show MCP tools returned from cluster1's mcp-server-everything
+- Open `http://localhost:8080/mcp` in a browser — shows Dex login page
+- Explain: every MCP call requires identity, enforced at the gateway with ExtAuth
+
+**Step 3 — Flow 2: MCP client auth (Bearer token)**
+```bash
+# Acquire JWT from Dex
+TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -d 'grant_type=password&username=demo@example.com&password=demo-pass' \
+  -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
+  | jq -r '.access_token')
+
+# MCP initialize — authenticated
+INIT=$(curl -si -X POST http://localhost:8080/mcp \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"demo","version":"1.0"}}}')
+
+SESSION=$(echo "${INIT}" | grep -i "^mcp-session-id:" | awk '{print $2}' | tr -d '\r')
+
+# List tools
+curl -s -X POST http://localhost:8080/mcp \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Mcp-Session-Id: ${SESSION}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+  | grep -o '"name":"[^"]*"'
+```
+- Explain: AI agents and SDKs use JWT Bearer tokens — no browser required
+- Note: for full MCP OAuth dynamic discovery (Claude Code, MCP Inspector auto-registering) replace Dex with Keycloak — see the [Authentication section](#authentication-with-agentgateway--keycloak)
 
 **Step 4 — Cross-cluster MCP (the differentiator)**
 ```bash
-# Kill cluster1's MCP server — traffic must now cross clusters
+# Scale down cluster1's MCP server — traffic must now cross clusters
 kubectl --context cluster1 -n agentgateway-system scale deploy mcp-server-everything --replicas=0
 
 # Same call, same token — now routes to cluster2 via ambient mesh E-W gateway
-curl -s -H "Authorization: Bearer ${TOKEN}" http://localhost:8080/mcp
+curl -si -X POST http://localhost:8080/mcp/remote \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"demo","version":"1.0"}}}'
 
 # Restore
 kubectl --context cluster1 -n agentgateway-system scale deploy mcp-server-everything --replicas=1
