@@ -1,0 +1,27 @@
+# Terraform state — contains real AWS ARNs, account IDs, and resource identifiers
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Local environment overrides
+.env
+*.env.local
+
+# Local binaries and downloaded archives
+istio-*/
+*.tar.gz
+
+# Private source repos checked out locally
+agentregistry/
+
+# IDE / tooling context
+.claude/
+
+# Backup files
+*.backup
+
+# Empty placeholder directories
+Phase1/
