@@ -994,6 +994,121 @@ Red Hat Service Mesh cannot use AGW as a waypoint for this east-west path.
 
 ---
 
+## Phase 7: Register MCP Servers in AgentRegistry (`scripts/07-register-mcp-servers.sh`)
+
+Registers three MCP servers into the AgentRegistry Enterprise catalog so they appear in the UI and are discoverable by AI agents browsing the registry.
+
+### Parameters
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `KUBE_CONTEXT` | No | `cluster1-singtel` | Hub cluster kubectl context |
+| `AGW_NAMESPACE` | No | `agentgateway-system` | AGW namespace |
+| `AREG_NAMESPACE` | No | `agentregistry` | AgentRegistry namespace |
+| `DEX_USER` | No | `demo@example.com` | Dex user for token acquisition |
+| `DEX_PASS` | No | `demo-pass` | Dex user password |
+
+### Example
+
+```bash
+./scripts/07-register-mcp-servers.sh
+```
+
+The script port-forwards both AgentRegistry (`:8080`) and Dex (`:5556`), acquires a Bearer token, and registers the servers via `POST /v0/servers`. It stays running and prints the UI URL when done — press `Ctrl-C` to stop.
+
+### Servers registered
+
+| Server name | Remote URL | Notes |
+|-------------|------------|-------|
+| `com.amazonaws/mcp-everything-local` | `http://<AGW_LB>/mcp` | mcp-server-everything on cluster1 via AGW hub |
+| `com.amazonaws/mcp-everything-remote` | `http://<AGW_LB>/mcp/remote` | mcp-server-everything on cluster2 (cross-cluster) |
+| `io.solo/search-solo-io` | `https://search.solo.io/mcp` | Solo.io docs search MCP (public) |
+
+### Namespace convention
+
+The MCP registry enforces that the server name's namespace reverse-maps to the URL's domain:
+
+```
+io.solo/*    → remote URL must be on *.solo.io       (e.g. search.solo.io)
+com.amazonaws/* → remote URL must be on *.amazonaws.com (e.g. AWS ELB hostnames)
+```
+
+The two in-cluster servers are accessed via the AgentGateway ELB (an `*.amazonaws.com` hostname), so they use the `com.amazonaws` namespace. The Solo.io docs server uses `io.solo`.
+
+### Manual registration (curl)
+
+If you need to re-register a server manually (e.g. after the LB address changes):
+
+```bash
+# Get a token first
+TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  -d 'grant_type=password&username=demo@example.com&password=demo-pass' \
+  -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
+  | python3 -c "import sys,json; t=json.load(sys.stdin); print(t.get('access_token',''))")
+
+AGW_LB=$(kubectl --context cluster1-singtel -n agentgateway-system \
+  get svc agentgateway-hub \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+
+# Register — mcp-server-everything (cluster1)
+curl -s -X POST http://localhost:8080/v0/servers \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+    "name":        "com.amazonaws/mcp-everything-local",
+    "title":       "MCP Everything — cluster1 (local)",
+    "description": "MCP reference server on cluster1",
+    "version":     "1.0.0",
+    "remotes": [{"type": "streamable-http", "url": "http://'"${AGW_LB}"'/mcp"}]
+  }'
+
+# Register — mcp-server-everything (cluster2, cross-cluster)
+curl -s -X POST http://localhost:8080/v0/servers \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+    "name":        "com.amazonaws/mcp-everything-remote",
+    "title":       "MCP Everything — cluster2 (remote, cross-cluster)",
+    "description": "MCP reference server on cluster2 routed cross-cluster",
+    "version":     "1.0.0",
+    "remotes": [{"type": "streamable-http", "url": "http://'"${AGW_LB}"'/mcp/remote"}]
+  }'
+
+# Register — Solo.io docs search (public, no auth required)
+curl -s -X POST http://localhost:8080/v0/servers \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+    "name":        "io.solo/search-solo-io",
+    "title":       "Solo.io Docs MCP",
+    "description": "Solo.io documentation search MCP server",
+    "version":     "1.0.0",
+    "remotes": [{"type": "streamable-http", "url": "https://search.solo.io/mcp"}]
+  }'
+
+# List registered servers
+curl -s -H "Authorization: Bearer ${TOKEN}" \
+  "http://localhost:8080/v0/servers?search=com.amazonaws" | python3 -m json.tool
+```
+
+### UI access
+
+After running the script (or the manual curl commands above), open the AgentRegistry UI:
+
+```bash
+kubectl --context cluster1-singtel -n agentregistry \
+  port-forward svc/agentregistry-agentregistry-enterprise 8080:8080
+# Open http://localhost:8080 — log in with demo@example.com / demo-pass
+```
+
+Navigate to **Servers** — you will see both `com.amazonaws/*` servers (in-cluster) and `io.solo/search-solo-io` (public) alongside the 363 seeded community entries.
+
+---
+
 ## Demo Script
 
 After all phases complete, run the interactive demo (`scripts/demo.sh`) or follow the steps manually.
