@@ -25,17 +25,22 @@ set -euo pipefail
 # Usage:
 #   ./scripts/07-register-mcp-servers.sh
 #   KUBE_CONTEXT=cluster1-singtel ./scripts/07-register-mcp-servers.sh
+#
+# This is the standard post-Phase-4 step. Run it once after 04-areg-enterprise.sh
+# to populate the AgentRegistry catalog with the deployed MCP servers.
 ###############################################################################
 
-KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1-singtel}"
+KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1}"
 AGW_NAMESPACE="${AGW_NAMESPACE:-agentgateway-system}"
 AREG_NAMESPACE="${AREG_NAMESPACE:-agentregistry}"
 AREG_SVC="${AREG_SVC:-agentregistry-agentregistry-enterprise}"
 AREG_LOCAL_PORT="${AREG_LOCAL_PORT:-8080}"
 DEX_NAMESPACE="${DEX_NAMESPACE:-dex}"
 DEX_LOCAL_PORT="${DEX_LOCAL_PORT:-5556}"
-DEX_CLIENT_ID="${DEX_CLIENT_ID:-agw-client}"
-DEX_CLIENT_SECRET="${DEX_CLIENT_SECRET:-agw-client-secret}"
+# areg-public is the OIDC public client registered for AgentRegistry.
+# It does not use a client secret (public client). agw-client is a confidential
+# client intended for AgentGateway and has read-only access to AREG.
+DEX_CLIENT_ID="${DEX_CLIENT_ID:-areg-public}"
 DEX_USER="${DEX_USER:-demo@example.com}"
 DEX_PASS="${DEX_PASS:-demo-pass}"
 
@@ -61,6 +66,12 @@ ok "AgentGateway LB: ${AGW_LB}"
 
 ###############################################################################
 # 2. Port-forward AgentRegistry (HTTP/UI on 8080) and Dex (5556)
+#
+# The AREG UI redirects the browser to Dex using the internal cluster
+# hostname (dex.dex.svc.cluster.local:5556). For the browser to follow
+# that redirect we:
+#   a) port-forward Dex on localhost:5556
+#   b) add 127.0.0.1 dex.dex.svc.cluster.local to /etc/hosts (needs sudo)
 ###############################################################################
 log "Starting port-forwards"
 
@@ -94,6 +105,27 @@ for port in "${AREG_LOCAL_PORT}" "${DEX_LOCAL_PORT}"; do
   done
 done
 
+# Ensure the internal Dex hostname resolves to localhost so the browser can
+# follow the OIDC redirect. Add it to /etc/hosts if not already present.
+DEX_HOSTS_ENTRY="127.0.0.1 dex.dex.svc.cluster.local"
+if grep -q "dex.dex.svc.cluster.local" /etc/hosts 2>/dev/null; then
+  ok "/etc/hosts already has dex.dex.svc.cluster.local"
+else
+  echo ""
+  echo "  The AREG UI redirects the browser to dex.dex.svc.cluster.local:${DEX_LOCAL_PORT}."
+  echo "  Adding a /etc/hosts entry so your browser resolves it to localhost."
+  echo "  (sudo password may be required)"
+  echo ""
+  if sudo sh -c "echo '${DEX_HOSTS_ENTRY}' >> /etc/hosts"; then
+    ok "Added to /etc/hosts: ${DEX_HOSTS_ENTRY}"
+  else
+    echo ""
+    echo "  Could not write /etc/hosts. Add this line manually, then re-open the browser:"
+    echo "    ${DEX_HOSTS_ENTRY}"
+    echo ""
+  fi
+fi
+
 ###############################################################################
 # 3. Acquire auth token from Dex
 ###############################################################################
@@ -101,8 +133,7 @@ log "Acquiring Bearer token from Dex"
 
 TOKEN=$(curl -s --max-time 10 -X POST "http://localhost:${DEX_LOCAL_PORT}/dex/token" \
   -H 'Content-Type: application/x-www-form-urlencoded' \
-  -d "grant_type=password&username=${DEX_USER}&password=${DEX_PASS}" \
-  -d "client_id=${DEX_CLIENT_ID}&client_secret=${DEX_CLIENT_SECRET}&scope=openid+email+profile" \
+  -d "grant_type=password&username=${DEX_USER}&password=${DEX_PASS}&client_id=${DEX_CLIENT_ID}&scope=openid+email+profile" \
   | python3 -c "import sys,json; t=json.load(sys.stdin); print(t.get('access_token',''))" 2>/dev/null)
 
 if [[ -z "${TOKEN}" ]]; then
@@ -139,8 +170,16 @@ register_server() {
       "import sys,json; d=json.load(sys.stdin); \
       errs=d.get('errors',[{}]); msg=errs[0].get('message',d.get('detail','unknown')) if errs else d.get('detail','unknown'); \
       print(msg)" 2>/dev/null || echo "${result}")
-    # 409/duplicate is OK — already registered
-    if echo "${result}" | python3 -c "import sys,json; d=json.load(sys.stdin); exit(0 if d.get('status')==409 else 1)" 2>/dev/null; then
+    # 409 = duplicate entry; 400 "duplicate version" = seed data already has this
+    # version — treat both as "already registered" and continue.
+    if echo "${result}" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+status = d.get('status', 0)
+errs = d.get('errors', [])
+dup_ver = any('duplicate version' in e.get('message','') for e in errs)
+exit(0 if status == 409 or dup_ver else 1)
+" 2>/dev/null; then
       ok "Already registered (skipping): $(echo "${payload}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('name','?'))" 2>/dev/null)"
     else
       fail "Registration failed: ${err}"

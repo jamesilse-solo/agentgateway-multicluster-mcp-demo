@@ -35,9 +35,6 @@ GATEWAY_API_CRDS_FILE="${GATEWAY_API_CRDS_FILE:-}"
 BOOKINFO_MANIFEST="${BOOKINFO_MANIFEST:-}"
 NETSHOOT_IMAGE="${NETSHOOT_IMAGE:-nicolaka/netshoot:latest}"
 NODE_IMAGE="${NODE_IMAGE:-node:22-alpine}"
-INSTALL_AGENT_REGISTRY="${INSTALL_AGENT_REGISTRY:-false}"
-AREG_CHART_PATH="${AREG_CHART_PATH:-}"
-AREG_VERSION="${AREG_VERSION:-0.2.1}"
 REGION="${REGION:-us-west-2}"
 
 # ─── Helper ───────────────────────────────────────────────────────────────────
@@ -51,10 +48,6 @@ for f in ca-cert.pem ca-key.pem root-cert.pem cert-chain.pem; do
   fi
 done
 
-if [[ "${INSTALL_AGENT_REGISTRY}" == "true" && -z "${AREG_CHART_PATH}" ]]; then
-  echo "ERROR: AREG_CHART_PATH is required when INSTALL_AGENT_REGISTRY=true"; exit 1
-fi
-
 ###############################################################################
 # 1. Create Namespaces
 ###############################################################################
@@ -62,10 +55,6 @@ log "Creating namespaces"
 for NS in istio-system istio-eastwest bookinfo debug agentgateway-system; do
   ${KC} create namespace "${NS}" --dry-run=client -o yaml | ${KC} apply -f -
 done
-
-if [[ "${INSTALL_AGENT_REGISTRY}" == "true" ]]; then
-  ${KC} create namespace agentregistry --dry-run=client -o yaml | ${KC} apply -f -
-fi
 
 ###############################################################################
 # 2. Deploy CA Certificates
@@ -209,10 +198,6 @@ ${KC} label namespace istio-system topology.istio.io/network="${NETWORK_NAME}" -
 ${KC} label namespace bookinfo istio.io/dataplane-mode=ambient --overwrite
 ${KC} label namespace debug istio.io/dataplane-mode=ambient --overwrite
 ${KC} label namespace agentgateway-system istio.io/dataplane-mode=ambient --overwrite
-if [[ "${INSTALL_AGENT_REGISTRY}" == "true" ]]; then
-  ${KC} label namespace agentregistry istio.io/dataplane-mode=ambient --overwrite
-fi
-
 ###############################################################################
 # 9. Deploy Bookinfo
 ###############################################################################
@@ -347,26 +332,6 @@ spec:
 EOF
 
 ###############################################################################
-# 14. Install Agent Registry (optional — hub cluster only)
-###############################################################################
-if [[ "${INSTALL_AGENT_REGISTRY}" == "true" ]]; then
-  log "Installing Agent Registry from ${AREG_CHART_PATH}"
-  JWT_KEY=$(openssl rand -hex 32)
-  helm upgrade --install agentregistry "${AREG_CHART_PATH}" \
-    --namespace agentregistry \
-    --kube-context "${KUBE_CONTEXT}" \
-    --set database.postgres.bundled.enabled=true \
-    --set database.postgres.vectorEnabled=true \
-    --set database.postgres.bundled.image.registry=docker.io \
-    --set database.postgres.bundled.image.repository=pgvector \
-    --set database.postgres.bundled.image.name=pgvector \
-    --set database.postgres.bundled.image.tag=pg18 \
-    --set config.disableBuiltinSeed="false" \
-    --set config.enableAnonymousAuth="true" \
-    --set config.jwtPrivateKey="${JWT_KEY}"
-fi
-
-###############################################################################
 # Summary
 ###############################################################################
 log "Installation complete for cluster: ${CLUSTER_NAME}"
@@ -379,9 +344,6 @@ echo "  - Bookinfo sample app"
 echo "  - Netshoot debug pod"
 echo "  - AgentGateway Enterprise ${AGW_VERSION}"
 echo "  - MCP server (mcp-server-everything)"
-if [[ "${INSTALL_AGENT_REGISTRY}" == "true" ]]; then
-  echo "  - Agent Registry ${AREG_VERSION}"
-fi
 
 echo ""
 echo "Helm releases:"

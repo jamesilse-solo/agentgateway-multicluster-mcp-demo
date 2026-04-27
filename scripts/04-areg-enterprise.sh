@@ -2,16 +2,18 @@
 set -euo pipefail
 
 ###############################################################################
-# 04-areg-enterprise.sh — Deploy AgentRegistry Enterprise v0.0.13
+# 04-areg-enterprise.sh — Deploy AgentRegistry Enterprise (latest)
 #
-# Installs (or upgrades from community) AgentRegistry Enterprise on cluster1.
+# Installs AgentRegistry Enterprise on cluster1.
 # Wires it to AgentGateway as an MCP backend at /mcp/registry.
 #
 # Run AFTER 03-dex.sh (Dex must be running for OIDC config).
 # Run BEFORE or AFTER 05-extauth.sh (order doesn't matter).
+# Run BEFORE 07-register-mcp-servers.sh.
 #
 # Usage:
 #   ./04-areg-enterprise.sh
+#   AREG_VERSION=0.0.13 ./04-areg-enterprise.sh   # pin a specific version
 ###############################################################################
 
 # ─── Optional Parameters ─────────────────────────────────────────────────────
@@ -21,7 +23,12 @@ AGW_NAMESPACE="${AGW_NAMESPACE:-agentgateway-system}"
 DEX_NAMESPACE="${DEX_NAMESPACE:-dex}"
 
 AREG_HELM_REPO="${AREG_HELM_REPO:-oci://us-docker.pkg.dev/agentregistry/enterprise/helm/agentregistry-enterprise}"
-AREG_VERSION="${AREG_VERSION:-0.0.13}"
+
+# Auto-detect latest version from OCI unless explicitly pinned.
+if [[ -z "${AREG_VERSION:-}" ]]; then
+  _latest=$(helm show chart "${AREG_HELM_REPO}" 2>/dev/null | awk '/^version:/{print $2}')
+  AREG_VERSION="${_latest:?Cannot auto-detect AREG_VERSION from OCI — set it explicitly: export AREG_VERSION=0.0.13}"
+fi
 
 DEX_ISSUER="http://dex.${DEX_NAMESPACE}.svc.cluster.local:5556/dex"
 DEX_CLIENT_ID="${DEX_CLIENT_ID:-agw-client}"
@@ -75,6 +82,9 @@ oidc:
   # Dex JWTs have no "groups" claim — map admin role by email instead.
   # CEL expression: "email" in claims ? grants admin to the demo user : []
   roleMapper: '"email" in claims && claims["email"] == "demo@example.com" ? ["admin"] : []'
+  # v0.0.14 changed the default superuserRole from "admin" to "". Set it
+  # explicitly so the CEL-granted "admin" role is recognised as a superuser.
+  superuserRole: "admin"
 
 database:
   postgres:

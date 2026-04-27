@@ -361,11 +361,13 @@ curl -si "http://${AGW_LB}/mcp" \
 | enterprise-agentgateway-crds | `oci://us-docker.pkg.dev/solo-public/enterprise-agentgateway/charts/enterprise-agentgateway-crds --version v2.3.0-rc.3` |
 | enterprise-agentgateway | `oci://us-docker.pkg.dev/solo-public/enterprise-agentgateway/charts/enterprise-agentgateway --version v2.3.0-rc.3` |
 
-### Agent Registry Enterprise Images (v0.0.13)
+### Agent Registry Enterprise Images (v0.0.14)
+
+> Version is auto-detected from the OCI registry by `04-areg-enterprise.sh`. Override by setting `AREG_VERSION=<tag>` before running the script.
 
 | Image | Full Path |
 |-------|-----------|
-| server (enterprise) | `us-docker.pkg.dev/agentregistry/enterprise/server:v0.0.13` |
+| server (enterprise) | `us-docker.pkg.dev/agentregistry/enterprise/server:v0.0.14` |
 | postgres (bundled) | `docker.io/library/postgres:18` |
 | clickhouse (telemetry) | `clickhouse/clickhouse-server:26.2.5-alpine` |
 | otel-collector (telemetry) | `otel/opentelemetry-collector-contrib:0.148.0` |
@@ -374,7 +376,7 @@ curl -si "http://${AGW_LB}/mcp" \
 
 | Chart | OCI Path |
 |-------|----------|
-| agentregistry-enterprise | `oci://us-docker.pkg.dev/agentregistry/enterprise/helm/agentregistry-enterprise --version 0.0.13` |
+| agentregistry-enterprise | `oci://us-docker.pkg.dev/agentregistry/enterprise/helm/agentregistry-enterprise --version 0.0.14` |
 
 ### Dex OIDC Provider (Phase 3)
 
@@ -1097,13 +1099,26 @@ curl -s -H "Authorization: Bearer ${TOKEN}" \
 
 ### UI access
 
-After running the script (or the manual curl commands above), open the AgentRegistry UI:
+The AREG UI uses OIDC (Dex) for login. The browser gets redirected to the internal cluster hostname `dex.dex.svc.cluster.local:5556`, so you need:
+
+1. A `/etc/hosts` entry so the browser resolves `dex.dex.svc.cluster.local` to localhost
+2. Port-forwards for both AREG (`:8080`) and Dex (`:5556`)
+3. Dex configured with `allowedOrigins: ["http://localhost:8080"]` so CORS is permitted for the PKCE token exchange (included in `03-dex.sh`)
 
 ```bash
+# 1. Add /etc/hosts entry (one-time, needs sudo)
+sudo sh -c 'echo "127.0.0.1 dex.dex.svc.cluster.local" >> /etc/hosts'
+
+# 2. Port-forward AgentRegistry UI and Dex
 kubectl --context cluster1-singtel -n agentregistry \
-  port-forward svc/agentregistry-agentregistry-enterprise 8080:8080
-# Open http://localhost:8080 — log in with demo@example.com / demo-pass
+  port-forward svc/agentregistry-agentregistry-enterprise 8080:8080 &
+kubectl --context cluster1-singtel -n dex \
+  port-forward svc/dex 5556:5556 &
+
+# 3. Open http://localhost:8080 — log in with demo@example.com / demo-pass
 ```
+
+> The `07-register-mcp-servers.sh` script handles all of this automatically including the `/etc/hosts` entry (prompts for sudo).
 
 Navigate to **Servers** — you will see both `com.amazonaws/*` servers (in-cluster) and `io.solo/search-solo-io` (public) alongside the 363 seeded community entries.
 

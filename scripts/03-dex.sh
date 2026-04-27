@@ -76,6 +76,10 @@ data:
 
     web:
       http: 0.0.0.0:5556
+      # Allow the AgentRegistry UI (port-forwarded at localhost:8080) to make
+      # cross-origin token requests to Dex (PKCE SPA callback flow).
+      allowedOrigins:
+      - "http://localhost:8080"
 
     oauth2:
       skipApprovalScreen: true
