@@ -71,7 +71,7 @@ helm upgrade --install agentregistry "${AREG_HELM_REPO}" \
   -f - <<EOF
 config:
   enableAnonymousAuth: "false"
-  disableBuiltinSeed: "false"
+  disableBuiltinSeed: "true"
   jwtPrivateKey: "${JWT_KEY}"
 
 oidc:
