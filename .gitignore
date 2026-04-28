@@ -22,6 +22,3 @@ agentregistry/
 
 # Backup files
 *.backup
-
-# Empty placeholder directories
-Phase1/
