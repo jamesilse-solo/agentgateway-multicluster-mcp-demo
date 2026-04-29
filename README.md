@@ -378,6 +378,33 @@ curl -si "http://${AGW_LB}/mcp" \
 |-------|----------|
 | agentregistry-enterprise | `oci://us-docker.pkg.dev/agentregistry/enterprise/helm/agentregistry-enterprise --version 0.0.14` |
 
+### Gloo Mesh Enterprise Images (v2.13.0)
+
+| Image | Full Path |
+|-------|-----------|
+| mgmt-server | `gcr.io/gloo-mesh/gloo-mesh-mgmt-server:2.13.0` |
+| agent | `gcr.io/gloo-mesh/gloo-mesh-agent:2.13.0` |
+| ui | `gcr.io/gloo-mesh/gloo-mesh-ui:2.13.0` |
+| analyzer | `gcr.io/gloo-mesh/gloo-mesh-analyzer:2.13.0` |
+| apiserver | `gcr.io/gloo-mesh/gloo-mesh-apiserver:2.13.0` |
+| insights | `gcr.io/gloo-mesh/gloo-mesh-insights:2.13.0` |
+| envoy (UI sidecar) | `gcr.io/gloo-mesh/gloo-mesh-envoy:2.13.0` |
+| otel-collector | `gcr.io/gloo-mesh/otel-collector:0.2.0` |
+| rate-limiter | `gcr.io/gloo-mesh/rate-limiter:0.11.7` |
+| redis | `gcr.io/gloo-mesh/redis:7.2.4-alpine` |
+| prometheus | `gcr.io/gloo-mesh/prometheus:v2.49.1` |
+| opa | `gcr.io/gloo-mesh/opa:0.59.0` |
+| postgresql (bundled) | `docker.io/bitnami/postgresql:16.1.0-debian-11-r15` |
+| kube-rbac-proxy | `quay.io/brancz/kube-rbac-proxy:v0.14.0` |
+| configmap-reload | `docker.io/jimmidyson/configmap-reload:v0.8.0` |
+
+### Gloo Mesh Enterprise Helm Chart
+
+| Chart | Source |
+|-------|--------|
+| gloo-platform | `helm repo add gloo-platform https://storage.googleapis.com/gloo-platform/helm-charts` |
+| chart name | `gloo-platform/gloo-platform --version 2.13.0` |
+
 ### Dex OIDC Provider (Phase 3)
 
 | Image | Full Path |
@@ -1121,6 +1148,87 @@ kubectl --context cluster1-singtel -n dex \
 > The `07-register-mcp-servers.sh` script handles all of this automatically including the `/etc/hosts` entry (prompts for sudo).
 
 Navigate to **Servers** — you will see both `com.amazonaws/*` servers (in-cluster) and `io.solo/search-solo-io` (public) alongside the 363 seeded community entries.
+
+---
+
+## Phase 8: Gloo Mesh Enterprise (`scripts/08-gloo-mesh-enterprise.sh`)
+
+Installs Gloo Mesh Enterprise on both clusters — management plane on cluster1 (hub) and agents on both clusters. Also adds a `/gloo-mesh` route to AgentGateway so the Gloo Mesh UI is reachable through the same authenticated gateway.
+
+### Prerequisites
+
+- Phase 1 (`01-install.sh`) completed on both clusters — Istio ambient mesh running
+- Phase 2 (`02-configure.sh`) completed — east-west peering established
+- `GLOO_MESH_LICENSE_KEY` set
+
+### Parameters
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `GLOO_MESH_LICENSE_KEY` | **Yes** | — | Gloo Mesh Enterprise license key |
+| `CLUSTER1_CONTEXT` | No | `cluster1` | Hub cluster kubectl context |
+| `CLUSTER2_CONTEXT` | No | `cluster2` | Spoke cluster kubectl context |
+| `GLOO_VERSION` | No | `2.13.0` | Gloo Mesh Enterprise version |
+| `GM_NS` | No | `gloo-mesh` | Namespace for Gloo Mesh components |
+| `AGW_NS` | No | `agentgateway-system` | AgentGateway namespace (for UI route) |
+| `REGISTRY` | No | _(unset)_ | Private registry prefix for air-gapped environments |
+
+### Example
+
+```bash
+export GLOO_MESH_LICENSE_KEY=<your-key>
+./scripts/08-gloo-mesh-enterprise.sh
+```
+
+For air-gapped environments, set `REGISTRY` to your private registry and mirror images first (see the Gloo Mesh Enterprise images table in the Container Images section above):
+
+```bash
+export REGISTRY=my-registry.internal
+export GLOO_MESH_LICENSE_KEY=<your-key>
+./scripts/08-gloo-mesh-enterprise.sh
+```
+
+### What it installs
+
+1. `gloo-mesh` namespace on both clusters (enrolled in ambient mesh)
+2. Self-signed relay mTLS certificates (root CA, server cert, client cert) — distributed as Kubernetes secrets
+3. Gloo Mesh management plane on cluster1: `glooMgmtServer`, `glooUi`, `prometheus`, `telemetryGateway`
+4. LoadBalancer service `gloo-mesh-mgmt-server-relay-lb` on cluster1 — exposes relay port 9900 for cluster2
+5. Gloo Mesh agent on cluster1 (connects to local management server on `gloo-mesh-mgmt-server:9900`)
+6. Gloo Mesh agent on cluster2 (connects to cluster1 relay LB on port 9900)
+7. `AgentgatewayBackend` + `HTTPRoute` wiring `/gloo-mesh` → `gloo-mesh-ui:8090` on cluster1
+
+### Access Gloo Mesh UI
+
+```bash
+# Option 1: Direct port-forward to UI service
+kubectl --context cluster1 -n gloo-mesh port-forward svc/gloo-mesh-ui 8090:8090
+# → http://localhost:8090
+
+# Option 2: Via AgentGateway (after auth)
+AGW_LB=$(kubectl --context cluster1 -n agentgateway-system \
+  get svc agentgateway-hub -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+# → http://${AGW_LB}/gloo-mesh
+```
+
+### Verify
+
+```bash
+# Check management plane pods
+kubectl --context cluster1 -n gloo-mesh get pods
+
+# Verify both clusters are registered
+kubectl --context cluster1 -n gloo-mesh get kubernetesclusters
+
+# Check Helm releases
+helm list -n gloo-mesh --kube-context cluster1
+# Expected: gloo-platform-mgmt, gloo-platform-agent-c1
+helm list -n gloo-mesh --kube-context cluster2
+# Expected: gloo-platform-agent
+
+# Verify AgentGateway route
+kubectl --context cluster1 -n agentgateway-system get httproute gloo-mesh-ui-route
+```
 
 ---
 
