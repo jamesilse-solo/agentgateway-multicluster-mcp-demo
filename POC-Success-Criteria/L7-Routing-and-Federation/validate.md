@@ -5,7 +5,7 @@ Validates L7-RT-01 through L7-RT-05 on the Singtel POC clusters.
 ## Run
 
 ```bash
-KUBE_CONTEXT=cluster1-singtel KUBE_CONTEXT2=cluster2-singtel ./L7-Routing/validate.sh
+KUBE_CONTEXT=cluster1-singtel KUBE_CONTEXT2=cluster2-singtel ./POC-Success-Criteria/L7-Routing-and-Federation/validate.sh
 ```
 
 ## Tests

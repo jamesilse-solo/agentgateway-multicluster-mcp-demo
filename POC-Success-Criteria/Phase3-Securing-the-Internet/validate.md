@@ -5,7 +5,7 @@ Validates MESH-08 and MESH-09 on the Singtel POC clusters.
 ## Run
 
 ```bash
-KUBE_CONTEXT=cluster1-singtel ./Phase3/validate.sh
+KUBE_CONTEXT=cluster1-singtel ./POC-Success-Criteria/Phase3-Securing-the-Internet/validate.sh
 ```
 
 ## Tests

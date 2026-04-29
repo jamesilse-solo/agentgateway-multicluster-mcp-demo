@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Phase 1 — Securing Agent to Tool Call: Interactive Validation
-# Usage: KUBE_CONTEXT=cluster1-singtel ./Phase1/validate.sh
+# Usage: KUBE_CONTEXT=cluster1-singtel ./POC-Success-Criteria/Phase1-Securing-Agent-to-Tool-Call/validate.sh
 set -euo pipefail
 
 KC_CTX="${KUBE_CONTEXT:-cluster1}"

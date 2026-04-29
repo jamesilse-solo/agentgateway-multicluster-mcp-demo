@@ -5,7 +5,7 @@ Validates L7-SEC-01 through L7-SEC-06 on the Singtel POC clusters.
 ## Run
 
 ```bash
-KUBE_CONTEXT=cluster1-singtel ./L7-Security/validate.sh
+KUBE_CONTEXT=cluster1-singtel ./POC-Success-Criteria/L7-Security-Identity-and-TBAC/validate.sh
 ```
 
 ## Tests

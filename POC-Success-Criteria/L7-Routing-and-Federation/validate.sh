@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # L7 Agent Gateway — Routing & Federation: Interactive Validation
 # Tests: L7-RT-01 through L7-RT-05
-# Usage: KUBE_CONTEXT=cluster1-singtel ./L7-Routing/validate.sh
+# Usage: KUBE_CONTEXT=cluster1-singtel ./POC-Success-Criteria/L7-Routing-and-Federation/validate.sh
 set -euo pipefail
 
 KC_CTX="${KUBE_CONTEXT:-cluster1}"

@@ -5,7 +5,7 @@ Validates MESH-01 through MESH-04 on the Singtel POC clusters using the interact
 ## Run
 
 ```bash
-KUBE_CONTEXT=cluster1-singtel ./Phase1/validate.sh
+KUBE_CONTEXT=cluster1-singtel ./POC-Success-Criteria/Phase1-Securing-Agent-to-Tool-Call/validate.sh
 ```
 
 The script is interactive — press **Enter** at each step to advance. No persistent changes are made to the cluster (MESH-02 applies an `AuthorizationPolicy` and deletes it within the same run).

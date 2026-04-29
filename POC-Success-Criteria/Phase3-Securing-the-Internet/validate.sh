@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Phase 3 — Securing the Internet (Public MCP Servers): Interactive Validation
-# Usage: KUBE_CONTEXT=cluster1-singtel ./Phase3/validate.sh
+# Usage: KUBE_CONTEXT=cluster1-singtel ./POC-Success-Criteria/Phase3-Securing-the-Internet/validate.sh
 set -euo pipefail
 
 KC_CTX="${KUBE_CONTEXT:-cluster1}"

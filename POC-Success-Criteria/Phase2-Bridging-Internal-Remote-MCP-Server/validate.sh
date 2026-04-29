@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Phase 2 — Bridging to Internal Remote MCP Server: Interactive Validation
-# Usage: KUBE_CONTEXT=cluster1-singtel KUBE_CONTEXT2=cluster2-singtel ./Phase2/validate.sh
+# Usage: KUBE_CONTEXT=cluster1-singtel KUBE_CONTEXT2=cluster2-singtel ./POC-Success-Criteria/Phase2-Bridging-Internal-Remote-MCP-Server/validate.sh
 set -euo pipefail
 
 KC_CTX="${KUBE_CONTEXT:-cluster1}"

@@ -5,7 +5,7 @@ Validates MESH-05 through MESH-07 on the Singtel POC clusters.
 ## Run
 
 ```bash
-KUBE_CONTEXT=cluster1-singtel KUBE_CONTEXT2=cluster2-singtel ./Phase2/validate.sh
+KUBE_CONTEXT=cluster1-singtel KUBE_CONTEXT2=cluster2-singtel ./POC-Success-Criteria/Phase2-Bridging-Internal-Remote-MCP-Server/validate.sh
 ```
 
 ## Tests

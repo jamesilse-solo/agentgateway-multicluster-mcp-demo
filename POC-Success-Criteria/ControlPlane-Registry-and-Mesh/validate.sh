@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Control Plane — AgentRegistry, Agent Gateway & Ambient Mesh: Interactive Validation
 # Tests: CP-01 through CP-05
-# Usage: KUBE_CONTEXT=cluster1-singtel KUBE_CONTEXT2=cluster2-singtel ./ControlPlane/validate.sh
+# Usage: KUBE_CONTEXT=cluster1-singtel KUBE_CONTEXT2=cluster2-singtel ./POC-Success-Criteria/ControlPlane-Registry-and-Mesh/validate.sh
 set -euo pipefail
 
 KC_CTX="${KUBE_CONTEXT:-cluster1}"

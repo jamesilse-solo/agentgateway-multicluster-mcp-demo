@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # L7 Agent Gateway — Security, Identity & TBAC: Interactive Validation
 # Tests: L7-SEC-01 through L7-SEC-06
-# Usage: KUBE_CONTEXT=cluster1-singtel ./L7-Security/validate.sh
+# Usage: KUBE_CONTEXT=cluster1-singtel ./POC-Success-Criteria/L7-Security-Identity-and-TBAC/validate.sh
 set -euo pipefail
 
 KC_CTX="${KUBE_CONTEXT:-cluster1}"
