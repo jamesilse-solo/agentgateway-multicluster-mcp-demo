@@ -1,7 +1,7 @@
-# Singtel × Solo.io — 30-Minute Demo Script
+# Solo.io AgentGateway — 30-Minute Demo Script
 
-**Audience:** Singtel enterprise architects  
-**Presenter:** Singtel SE team  
+**Audience:** Enterprise architects  
+**Presenter:** SE team  
 **Duration:** 30 minutes  
 **Core messages:** (1) Centralized MCP gateway + registry, (2) Cross-cluster federation
 
@@ -13,7 +13,7 @@ Run these before the call starts. Everything should be green before screen-share
 
 ```bash
 # 1. Start all port-forwards (leave this running in a dedicated terminal)
-KUBE_CONTEXT=cluster1-singtel ./demo/portforward.sh
+KUBE_CONTEXT=cluster1 ./demo/portforward.sh
 
 # 2. Verify AgentRegistry UI loads and shows 3 servers
 open http://localhost:8080
@@ -24,7 +24,7 @@ open http://localhost:9978
 # → Should show routes/policies; if blank try :9093
 
 # 4. Confirm AGW LB resolves
-kubectl --context cluster1-singtel -n agentgateway-system get svc agentgateway-hub
+kubectl --context cluster1 -n agentgateway-system get svc agentgateway-hub
 # → Copy the EXTERNAL-IP / hostname for reference
 
 # 5. Verify local MCP works
@@ -96,7 +96,7 @@ curl -s -X POST http://localhost:8080/v0/servers \
     "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
     "name": "com.amazonaws/mcp-demo-live",
     "title": "Live Demo Server",
-    "description": "Registered live during the Singtel demo",
+    "description": "Registered live during the demo",
     "version": "1.0.0",
     "remotes": [{"type": "streamable-http", "url": "http://'"${AGW_LB:-agw-lb}"'/mcp"}]
   }' | python3 -m json.tool
@@ -116,7 +116,7 @@ curl -s -X POST http://localhost:8080/v0/servers \
 Run the script with the audience watching the terminal:
 
 ```bash
-KUBE_CONTEXT=cluster1-singtel ./demo/send-traffic.sh
+KUBE_CONTEXT=cluster1 ./demo/send-traffic.sh
 ```
 
 **Narrate each step as it runs:**
@@ -174,7 +174,7 @@ Navigate to request logs or traces:
 **Goal:** Show the exact same agent flow succeeding against cluster2.
 
 ```bash
-KUBE_CONTEXT=cluster1-singtel ./demo/send-traffic.sh --remote
+KUBE_CONTEXT=cluster1 ./demo/send-traffic.sh --remote
 ```
 
 **Narrate as it runs:**
@@ -228,27 +228,27 @@ Back in the AgentGateway Enterprise UI, show the `/mcp/remote` route:
 
 **AgentRegistry UI shows no servers:**
 ```bash
-KUBE_CONTEXT=cluster1-singtel ./scripts/07-register-mcp-servers.sh
+KUBE_CONTEXT=cluster1 ./scripts/07-register-mcp-servers.sh
 ```
 
 **Port-forward for AgentGateway UI not working:**
 ```bash
-kubectl --context cluster1-singtel -n agentgateway-system get svc enterprise-agentgateway
+kubectl --context cluster1 -n agentgateway-system get svc enterprise-agentgateway
 # check port names and available ports
 ```
 
 **send-traffic.sh fails at JWT step:**
 ```bash
 # Verify Dex pod is running
-kubectl --context cluster1-singtel -n dex get pods
+kubectl --context cluster1 -n dex get pods
 # Verify agw-client is configured in Dex
-kubectl --context cluster1-singtel -n dex get cm dex-config -o yaml | grep -A5 agw-client
+kubectl --context cluster1 -n dex get cm dex-config -o yaml | grep -A5 agw-client
 ```
 
 **send-traffic.sh --remote fails:**
 ```bash
 # Verify cross-cluster route exists
-kubectl --context cluster1-singtel -n agentgateway-system get httproute
+kubectl --context cluster1 -n agentgateway-system get httproute
 # Verify spoke backend
-kubectl --context cluster1-singtel -n agentgateway-system get agentgatewaybackend
+kubectl --context cluster1 -n agentgateway-system get agentgatewaybackend
 ```

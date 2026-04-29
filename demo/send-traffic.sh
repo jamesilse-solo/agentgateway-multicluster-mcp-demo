@@ -17,10 +17,10 @@ set -euo pipefail
 # Usage:
 #   ./demo/send-traffic.sh
 #   ./demo/send-traffic.sh --remote
-#   KUBE_CONTEXT=cluster1-singtel ./demo/send-traffic.sh
+#   KUBE_CONTEXT=cluster1 ./demo/send-traffic.sh
 ###############################################################################
 
-KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1-singtel}"
+KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1}"
 AGW_NAMESPACE="${AGW_NAMESPACE:-agentgateway-system}"
 DEX_NAMESPACE="${DEX_NAMESPACE:-dex}"
 KC="kubectl --context ${KUBE_CONTEXT}"
@@ -149,7 +149,7 @@ INIT_RESPONSE=$(curl -si -X POST "http://${AGW_LB}${MCP_PATH}" \
   ${TOKEN:+-H "Authorization: Bearer ${TOKEN}"} \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"singtel-demo-agent","version":"1.0"}}}' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"demo-agent","version":"1.0"}}}' \
   2>/dev/null)
 
 SESSION_ID=$(echo "${INIT_RESPONSE}" | grep -i "^mcp-session-id:" | awk '{print $2}' | tr -d '\r')
@@ -216,7 +216,7 @@ CALL_RESPONSE=$(curl -s -X POST "http://${AGW_LB}${MCP_PATH}" \
   -H "Mcp-Session-Id: ${SESSION_ID}" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"message":"Hello from Singtel AgentGateway demo"}}}' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"message":"Hello from AgentGateway demo"}}}' \
   2>/dev/null)
 
 CALL_TEXT=$(echo "${CALL_RESPONSE}" | python3 -c \

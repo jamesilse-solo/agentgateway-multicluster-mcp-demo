@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ###############################################################################
-# portforward.sh — Set up all port-forwards for the Singtel demo
+# portforward.sh — Set up all port-forwards for the demo
 #
 # Starts port-forwards in the background for:
 #   1. AgentRegistry UI        → http://localhost:8080
@@ -11,10 +11,10 @@ set -euo pipefail
 #
 # Usage:
 #   ./demo/portforward.sh
-#   KUBE_CONTEXT=cluster1-singtel ./demo/portforward.sh
+#   KUBE_CONTEXT=cluster1 ./demo/portforward.sh
 ###############################################################################
 
-KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1-singtel}"
+KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1}"
 AGW_NAMESPACE="${AGW_NAMESPACE:-agentgateway-system}"
 AREG_NAMESPACE="${AREG_NAMESPACE:-agentregistry}"
 KC="kubectl --context ${KUBE_CONTEXT}"
@@ -32,7 +32,7 @@ warn() { echo -e "  ${YELLOW}⚠  $1${RESET}"; }
 fail() { echo -e "  ${RED}✗  $1${RESET}"; }
 hdr()  { echo ""; echo -e "${BOLD}${CYAN}══  $1${RESET}"; echo ""; }
 
-hdr "Singtel Demo — Port-Forward Setup"
+hdr "AgentGateway Demo — Port-Forward Setup"
 info "Cluster context: ${KUBE_CONTEXT}"
 echo ""
 
