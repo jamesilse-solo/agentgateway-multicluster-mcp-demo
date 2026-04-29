@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Control Plane — AgentRegistry, Agent Gateway & Ambient Mesh: Interactive Validation
-# Tests: CP-01 through CP-05
-# Usage: KUBE_CONTEXT=cluster1-singtel KUBE_CONTEXT2=cluster2-singtel ./POC-Success-Criteria/Phase7-ControlPlane-Registry-and-Mesh/validate.sh
+# Tests: CP-02 through CP-05
+# Usage: KUBE_CONTEXT=cluster1 KUBE_CONTEXT2=cluster2 ./POC-Success-Criteria/Phase7-ControlPlane-Registry-and-Mesh/validate.sh
 set -euo pipefail
 
 KC_CTX="${KUBE_CONTEXT:-cluster1}"
@@ -44,13 +44,12 @@ echo ""
 echo -e "${M}╔════════════════════════════════════════════════════════════╗${N}"
 echo -e "${M}║   Control Plane — AgentRegistry, Gateway & Mesh           ║${N}"
 echo -e "${M}║   Hub: ${KC_CTX}   Spoke: ${KC_CTX2}               ║${N}"
-echo -e "${M}║   Tests: CP-01 · 02 · 03 · 04 · 05                      ║${N}"
+echo -e "${M}║   Tests: CP-02 · 03 · 04 · 05                           ║${N}"
 echo -e "${M}╚════════════════════════════════════════════════════════════╝${N}"
 echo ""
-echo -e "  → Goal: validate the management plane — a single control plane"
-echo -e "    pushes configuration to all clusters, the registry reflects health"
-echo -e "    state in real time, admin isolation is enforced, and distributed"
-echo -e "    traces span the full cross-cluster call path via OTEL."
+echo -e "  → Goal: validate the registry reflects health state in real time,"
+echo -e "    admin isolation is enforced, and distributed traces span the"
+echo -e "    full cross-cluster call path via OTEL."
 pause
 
 # Start port-forward to AgentRegistry
@@ -69,47 +68,6 @@ if curl -s --max-time 3 "http://localhost:${AREG_LOCAL_PORT}/v0/servers" &>/dev/
 else
   warn "AgentRegistry port-forward not ready — CP-02 registry checks will be limited"
 fi
-
-###############################################################################
-# CP-01 — Hybrid / Single Control Plane
-###############################################################################
-step "CP-01 — Hybrid / Single Control Plane"
-echo -e "  → One istiod instance (cluster1) acts as the control plane for both"
-echo -e "    clusters, pushing xDS config to ztunnel and AgentGateway data planes."
-echo -e "  → AgentGateway control plane (cluster1) pushes route/policy config"
-echo -e "    to enterprise-agentgateway instances on all clusters."
-pause
-
-# CP-01.1 — Show istiod on cluster1 (single control plane)
-show "${KC} -n istio-system get pod -l app=istiod -o wide"
-${KC} -n istio-system get pod -l app=istiod -o wide 2>/dev/null \
-  || warn "istiod not found on ${KC_CTX}"
-note "A single istiod pod manages the ambient mesh across both clusters via
-      the Istio Relay Agent (peering gateway). It is the sole source of
-      xDS configuration for ztunnel on both cluster1 and cluster2."
-pause
-
-# CP-01.2 — Verify data planes on both clusters received config
-show "${KC} -n istio-system get pod -l app=ztunnel -o wide"
-${KC} -n istio-system get pod -l app=ztunnel -o wide 2>/dev/null \
-  || warn "ztunnel not found on ${KC_CTX}"
-echo ""
-show "${KC2} -n istio-system get pod -l app=ztunnel -o wide"
-${KC2} -n istio-system get pod -l app=ztunnel -o wide 2>/dev/null \
-  || warn "ztunnel not found on ${KC_CTX2}"
-note "ztunnel is running on both clusters. When istiod pushes an xDS update
-      (e.g. a new AuthorizationPolicy), both clusters' ztunnels apply it simultaneously."
-pause
-
-# CP-01.3 — Verify AgentGateway data planes on both clusters
-show "${KC} -n ${AGW_NS} get pod -l app.kubernetes.io/name=agentgateway -o wide"
-${KC} -n "${AGW_NS}" get pod -l "app.kubernetes.io/name=agentgateway" -o wide 2>/dev/null \
-  || ${KC} -n "${AGW_NS}" get pod | grep -i agentgateway | head -5 || warn "No AGW pods found on cluster1"
-echo ""
-show "${KC2} -n ${AGW_NS} get pod | grep -i agentgateway"
-${KC2} -n "${AGW_NS}" get pod 2>/dev/null | grep -i agentgateway | head -5 \
-  || warn "No AGW pods found on ${KC_CTX2}"
-pause
 
 ###############################################################################
 # CP-02 — Central Registry & Health Checks
@@ -167,7 +125,7 @@ show "${KC} get workspace -A 2>/dev/null || ${KC} get workspaces -A 2>/dev/null"
 ${KC} get workspace -A 2>/dev/null \
   || ${KC} api-resources 2>/dev/null | grep -i workspace \
   || echo "  (Workspace CRD not installed — requires Gloo Mesh Enterprise management plane)"
-note "Workspace CRDs define administrative boundaries. A Singtel BU admin can only
+note "Workspace CRDs define administrative boundaries. A BU admin can only
       see and modify AgentGateway routes and policies in their assigned workspace.
       Cross-workspace access requires an explicit WorkspaceSettings binding."
 pause
@@ -290,7 +248,6 @@ echo ""
 echo -e "${G}╔══════════════════════════════════════════════════════╗${N}"
 echo -e "${G}║   Control Plane validation complete ✅              ║${N}"
 echo -e "${G}║                                                      ║${N}"
-echo -e "${G}║   CP-01  Single control plane → both clusters        ║${N}"
 echo -e "${G}║   CP-02  Registry health checks + catalog accuracy   ║${N}"
 echo -e "${G}║   CP-03  Isolated admin workspaces (RBAC)            ║${N}"
 echo -e "${G}║   CP-04  Super admin global visibility               ║${N}"
