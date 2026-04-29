@@ -50,6 +50,10 @@ helm upgrade --install agentregistry "${AREG_HELM_REPO}" \
   --version "${AREG_VERSION}" \
   --wait \
   --timeout 10m \
+  --set image.registry=docker.io \
+  --set image.repository=pmuir \
+  --set image.name=agentregistry-server \
+  --set image.tag=add-agentgateway-resource \
   -f - <<EOF
 config:
   # No OIDC in OSS — anonymous access for demo use.

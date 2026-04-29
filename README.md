@@ -361,22 +361,18 @@ curl -si "http://${AGW_LB}/mcp" \
 | enterprise-agentgateway-crds | `oci://us-docker.pkg.dev/solo-public/enterprise-agentgateway/charts/enterprise-agentgateway-crds --version v2.3.0-rc.3` |
 | enterprise-agentgateway | `oci://us-docker.pkg.dev/solo-public/enterprise-agentgateway/charts/enterprise-agentgateway --version v2.3.0-rc.3` |
 
-### Agent Registry Enterprise Images (v0.0.14)
-
-> Version is auto-detected from the OCI registry by `04-areg-enterprise.sh`. Override by setting `AREG_VERSION=<tag>` before running the script.
+### AgentRegistry Images
 
 | Image | Full Path |
 |-------|-----------|
-| server (enterprise) | `us-docker.pkg.dev/agentregistry/enterprise/server:v0.0.14` |
-| postgres (bundled) | `docker.io/library/postgres:18` |
-| clickhouse (telemetry) | `clickhouse/clickhouse-server:26.2.5-alpine` |
-| otel-collector (telemetry) | `otel/opentelemetry-collector-contrib:0.148.0` |
+| server | `docker.io/pmuir/agentregistry-server:add-agentgateway-resource` |
+| postgres/pgvector (bundled) | `docker.io/pgvector/pgvector:pg18` |
 
-### Agent Registry Enterprise Helm Chart
+### AgentRegistry Helm Chart
 
 | Chart | OCI Path |
 |-------|----------|
-| agentregistry-enterprise | `oci://us-docker.pkg.dev/agentregistry/enterprise/helm/agentregistry-enterprise --version 0.0.14` |
+| agentregistry | `oci://ghcr.io/agentregistry-dev/agentregistry/charts/agentregistry` |
 
 ### Gloo Mesh Enterprise Images (v2.13.0)
 
