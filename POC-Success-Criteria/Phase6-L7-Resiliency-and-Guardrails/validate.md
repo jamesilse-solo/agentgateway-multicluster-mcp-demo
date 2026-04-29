@@ -5,7 +5,7 @@ Validates L7-GR-01 through L7-GR-04 on the Singtel POC clusters.
 ## Run
 
 ```bash
-KUBE_CONTEXT=cluster1-singtel ./POC-Success-Criteria/Phase6-L7-Resiliencey-and-Guardrails/validate.sh
+KUBE_CONTEXT=cluster1-singtel ./POC-Success-Criteria/Phase6-L7-Resiliency-and-Guardrails/validate.sh
 ```
 
 ## Tests

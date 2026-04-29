@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # L7 Agent Gateway — Resiliency & External Guardrails: Interactive Validation
 # Tests: L7-GR-01 through L7-GR-04
-# Usage: KUBE_CONTEXT=cluster1-singtel ./POC-Success-Criteria/Phase6-L7-Resiliencey-and-Guardrails/validate.sh
+# Usage: KUBE_CONTEXT=cluster1-singtel ./POC-Success-Criteria/Phase6-L7-Resiliency-and-Guardrails/validate.sh
 set -euo pipefail
 
 KC_CTX="${KUBE_CONTEXT:-cluster1}"
