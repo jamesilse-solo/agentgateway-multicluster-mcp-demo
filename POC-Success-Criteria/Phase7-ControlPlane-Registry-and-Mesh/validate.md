@@ -5,7 +5,7 @@ Validates CP-01 through CP-05 on the Singtel POC clusters.
 ## Run
 
 ```bash
-KUBE_CONTEXT=cluster1-singtel KUBE_CONTEXT2=cluster2-singtel ./POC-Success-Criteria/ControlPlane-Registry-and-Mesh/validate.sh
+KUBE_CONTEXT=cluster1-singtel KUBE_CONTEXT2=cluster2-singtel ./POC-Success-Criteria/Phase7-ControlPlane-Registry-and-Mesh/validate.sh
 ```
 
 ## Tests
