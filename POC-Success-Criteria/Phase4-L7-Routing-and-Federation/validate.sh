@@ -8,6 +8,8 @@ KC_CTX="${KUBE_CONTEXT:-cluster1}"
 KC_CTX2="${KUBE_CONTEXT2:-cluster2}"
 KC="kubectl --context ${KC_CTX}"
 AGW_NS="agentgateway-system"
+DEX_NS="${DEX_NAMESPACE:-dex}"
+DEX_LOCAL_PORT="${DEX_LOCAL_PORT:-5556}"
 
 B='\033[1;34m'; G='\033[1;32m'; Y='\033[1;33m'
 C='\033[1;36m'; M='\033[0;35m'; N='\033[0m'
@@ -56,6 +58,27 @@ NETSHOOT=$(${KC} -n debug get pod -l app=netshoot \
 AGW_SVC_IP=$(${KC} -n "${AGW_NS}" get svc agentgateway-hub \
   -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
 
+# Acquire Dex JWT (ExtAuth enforces on all AGW traffic including ClusterIP)
+pkill -f "port-forward.*dex.*${DEX_LOCAL_PORT}" 2>/dev/null || true
+sleep 1
+${KC} -n "${DEX_NS}" port-forward svc/dex "${DEX_LOCAL_PORT}:5556" &>/dev/null &
+DEX_PF=$!
+trap 'kill "${DEX_PF}" 2>/dev/null || true' EXIT
+sleep 3
+
+TOKEN=$(curl -s --max-time 10 \
+  -X POST "http://localhost:${DEX_LOCAL_PORT}/dex/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=password&username=demo@example.com&password=demo-pass" \
+  -d "client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || true)
+
+if [[ -n "${TOKEN}" ]]; then
+  ok "JWT acquired (${#TOKEN} chars) — will be passed on all AGW calls"
+else
+  warn "Could not acquire JWT — AGW calls may return 302/401 redirects"
+fi
+
 ###############################################################################
 # L7-RT-01 — Composite Server / Single URL
 ###############################################################################
@@ -85,6 +108,8 @@ if [[ -n "${NETSHOOT}" && -n "${AGW_SVC_IP}" ]]; then
     curl -s --max-time 15 \
     -X POST \
     -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    ${TOKEN:+-H "Authorization: Bearer ${TOKEN}"} \
     -D - \
     "http://${AGW_SVC_IP}/mcp" \
     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' \
@@ -94,10 +119,25 @@ if [[ -n "${NETSHOOT}" && -n "${AGW_SVC_IP}" ]]; then
     curl -s --max-time 15 \
     -X POST \
     -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    ${TOKEN:+-H "Authorization: Bearer ${TOKEN}"} \
     ${SESSION:+-H "Mcp-Session-Id: ${SESSION}"} \
     "http://${AGW_SVC_IP}/mcp" \
     -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
-    2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('result',{}).get('tools',[])))" 2>/dev/null || echo "?")
+    2>/dev/null | python3 -c "
+import sys, json
+raw = sys.stdin.read()
+d = {}
+try:
+    d = json.loads(raw)
+except Exception:
+    for ln in raw.split('\n'):
+        if ln.startswith('data: '):
+            try: d = json.loads(ln[6:]); break
+            except Exception: pass
+tools = d.get('result', {}).get('tools', [])
+print(len(tools))
+" 2>/dev/null || echo "?")
   echo -e "  Tools returned: ${TOOL_COUNT}"
   note "A merged tools/list from multiple backends proves the gateway is parsing
         JSON-RPC and merging schemas — not just proxying bytes."
@@ -129,6 +169,8 @@ if [[ -n "${NETSHOOT}" && -n "${AGW_SVC_IP}" ]]; then
     curl -s --max-time 20 \
     -X POST \
     -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    ${TOKEN:+-H "Authorization: Bearer ${TOKEN}"} \
     "http://${AGW_SVC_IP}/mcp/remote" \
     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' \
     -o /dev/null \
@@ -164,6 +206,8 @@ if [[ -n "${NETSHOOT}" && -n "${AGW_SVC_IP}" ]]; then
     curl -s --max-time 15 \
     -X POST \
     -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    ${TOKEN:+-H "Authorization: Bearer ${TOKEN}"} \
     -D /dev/stderr \
     "http://${AGW_SVC_IP}/mcp" \
     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' \
@@ -176,6 +220,8 @@ if [[ -n "${NETSHOOT}" && -n "${AGW_SVC_IP}" ]]; then
         curl -s --max-time 10 \
         -X POST \
         -H "Content-Type: application/json" \
+        -H "Accept: application/json, text/event-stream" \
+        ${TOKEN:+-H "Authorization: Bearer ${TOKEN}"} \
         -H "Mcp-Session-Id: ${SESSION_ID}" \
         "http://${AGW_SVC_IP}/mcp" \
         -d "{\"jsonrpc\":\"2.0\",\"id\":${i},\"method\":\"tools/list\",\"params\":{}}" \
@@ -214,9 +260,24 @@ if [[ -n "${NETSHOOT}" && -n "${AGW_SVC_IP}" ]]; then
   LOCAL_TOOLS=$(${KC} -n debug exec "${NETSHOOT}" -- \
     curl -s --max-time 15 \
     -X POST -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    ${TOKEN:+-H "Authorization: Bearer ${TOKEN}"} \
     "http://${AGW_SVC_IP}/mcp" \
     -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
-    2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); tools=d.get('result',{}).get('tools',[]); print(f'{len(tools)} tools: '+', '.join(t[\"name\"] for t in tools[:5]))" 2>/dev/null || echo "?")
+    2>/dev/null | python3 -c "
+import sys, json
+raw = sys.stdin.read()
+d = {}
+try:
+    d = json.loads(raw)
+except Exception:
+    for ln in raw.split('\n'):
+        if ln.startswith('data: '):
+            try: d = json.loads(ln[6:]); break
+            except Exception: pass
+tools = d.get('result', {}).get('tools', [])
+print(f'{len(tools)} tools: ' + ', '.join(t[\"name\"] for t in tools[:5]))
+" 2>/dev/null || echo "?")
   echo -e "  /mcp: ${LOCAL_TOOLS}"
   note "Different routes can expose different tool subsets. A 'Project X' context
         header could select a filtered backend that only exposes approved tools."
@@ -249,8 +310,9 @@ if [[ -n "${NETSHOOT}" && -n "${AGW_SVC_IP}" ]]; then
   ${KC} -n debug exec "${NETSHOOT}" -- \
     curl -s --max-time 5 \
     -H "Accept: text/event-stream" \
+    ${TOKEN:+-H "Authorization: Bearer ${TOKEN}"} \
     "http://${AGW_SVC_IP}/mcp/sse" \
-    -o /dev/null -w "  HTTP %{http_code}  (any response = protocol probe accepted)\n" || true
+    -o /dev/null -w "  HTTP %{http_code}  (any non-302 = protocol probe accepted)\n" || true
   note "If the backend supports SSE, the gateway returns an event stream.
         If the backend supports Streamable HTTP, the gateway proxies it directly.
         The client code is identical in both cases."

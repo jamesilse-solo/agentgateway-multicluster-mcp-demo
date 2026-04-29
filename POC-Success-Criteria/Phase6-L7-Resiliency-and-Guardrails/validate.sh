@@ -7,6 +7,8 @@ set -euo pipefail
 KC_CTX="${KUBE_CONTEXT:-cluster1}"
 KC="kubectl --context ${KC_CTX}"
 AGW_NS="agentgateway-system"
+DEX_NS="${DEX_NAMESPACE:-dex}"
+DEX_LOCAL_PORT="${DEX_LOCAL_PORT:-5556}"
 
 B='\033[1;34m'; G='\033[1;32m'; Y='\033[1;33m'
 C='\033[1;36m'; M='\033[0;35m'; N='\033[0m'
@@ -55,6 +57,27 @@ NETSHOOT=$(${KC} -n debug get pod -l app=netshoot \
 AGW_SVC_IP=$(${KC} -n "${AGW_NS}" get svc agentgateway-hub \
   -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
 
+# Acquire Dex JWT (ExtAuth enforces on all AGW traffic)
+pkill -f "port-forward.*dex.*${DEX_LOCAL_PORT}" 2>/dev/null || true
+sleep 1
+${KC} -n "${DEX_NS}" port-forward svc/dex "${DEX_LOCAL_PORT}:5556" &>/dev/null &
+DEX_PF=$!
+trap 'kill "${DEX_PF}" 2>/dev/null || true' EXIT
+sleep 3
+
+TOKEN=$(curl -s --max-time 10 \
+  -X POST "http://localhost:${DEX_LOCAL_PORT}/dex/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=password&username=demo@example.com&password=demo-pass" \
+  -d "client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))" 2>/dev/null || true)
+
+if [[ -n "${TOKEN}" ]]; then
+  ok "JWT acquired (${#TOKEN} chars)"
+else
+  warn "Could not acquire JWT — AGW calls may return 302 redirects"
+fi
+
 ###############################################################################
 # L7-GR-01 — External Guardrails Webhooks (ExtProc)
 ###############################################################################
@@ -85,6 +108,8 @@ if [[ -n "${NETSHOOT}" && -n "${AGW_SVC_IP}" ]]; then
   ${KC} -n debug exec "${NETSHOOT}" -- \
     curl -s --max-time 10 \
     -X POST -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    ${TOKEN:+-H "Authorization: Bearer ${TOKEN}"} \
     "http://${AGW_SVC_IP}/mcp" \
     -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"message":"My SSN is 123-45-6789"}}}' \
     -D - -o /dev/null 2>/dev/null | grep -i "x-guardrail\|x-sanitized\|x-pii" || true
@@ -121,11 +146,21 @@ if [[ -n "${NETSHOOT}" && -n "${AGW_SVC_IP}" ]]; then
   ${KC} -n debug exec "${NETSHOOT}" -- \
     curl -s --max-time 10 \
     -X POST -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    ${TOKEN:+-H "Authorization: Bearer ${TOKEN}"} \
     "http://${AGW_SVC_IP}/mcp" \
     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
     2>/dev/null | python3 -c "
 import sys, json
-d = json.load(sys.stdin)
+raw = sys.stdin.read()
+d = {}
+try:
+    d = json.loads(raw)
+except Exception:
+    for ln in raw.split('\n'):
+        if ln.startswith('data: '):
+            try: d = json.loads(ln[6:]); break
+            except Exception: pass
 has_jsonrpc = 'jsonrpc' in d
 has_id = 'id' in d
 has_result = 'result' in d or 'error' in d
@@ -171,6 +206,8 @@ if [[ -n "${NETSHOOT}" && -n "${AGW_SVC_IP}" ]]; then
       CODE=$(${KC} -n debug exec "${NETSHOOT}" -- \
         curl -s --max-time 5 \
         -X POST -H "Content-Type: application/json" \
+        -H "Accept: application/json, text/event-stream" \
+        ${TOKEN:+-H "Authorization: Bearer ${TOKEN}"} \
         "http://${AGW_SVC_IP}/mcp" \
         -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
         -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
@@ -220,6 +257,8 @@ if [[ -n "${NETSHOOT}" && -n "${AGW_SVC_IP}" ]]; then
   RESP=$(${KC} -n debug exec "${NETSHOOT}" -- \
     curl -s --max-time 10 \
     -X POST -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
+    ${TOKEN:+-H "Authorization: Bearer ${TOKEN}"} \
     "http://${AGW_SVC_IP}/mcp" \
     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
     2>/dev/null || echo "{}")

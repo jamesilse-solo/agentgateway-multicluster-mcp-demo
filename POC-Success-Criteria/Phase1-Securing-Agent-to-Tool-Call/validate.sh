@@ -222,34 +222,52 @@ pause
 # MESH-04 — Handling Heavy AI Data Payloads (MTU Limits)
 ###############################################################################
 step "MESH-04 — Handling Heavy AI Data Payloads (MTU / >10MB)"
-echo -e "  → Generate a >10MB JSON-RPC body from the netshoot pod and POST it"
-echo -e "    through the ambient mesh to mcp-server-everything."
+echo -e "  → Generate a >10MB payload inside the netshoot pod, write it to a file,"
+echo -e "    then POST it through the ambient mesh to mcp-server-everything."
 echo ""
-echo -e "  → size_upload > 10,000,000 bytes in the curl output proves that ztunnel's"
-echo -e "    HBONE tunnel correctly fragmented and reassembled the oversized stream"
-echo -e "    without truncation or a mid-connection reset."
+echo -e "  → Proof: ztunnel logs show bytes_recv > 10,000,000 for the connection,"
+echo -e "    confirming the HBONE tunnel forwarded the full oversized stream without"
+echo -e "    truncation or a mid-connection reset."
 echo ""
-echo -e "  → Note: this takes ~15-20 seconds (dd + base64 generation inside netshoot)."
+echo -e "  → Note: this takes ~20-30 seconds (dd + base64 generation inside netshoot)."
 pause
 
 if [[ -n "${NETSHOOT}" ]]; then
-  show "dd 12MB → base64 → JSON-RPC POST via ambient mesh (inside netshoot)"
+  show "dd 12MB → base64 → file → POST via ambient mesh (inside netshoot)"
   ${KC} -n debug exec "${NETSHOOT}" -- sh -c '
     echo "  Generating 12MB random payload (base64-encoded)..."
-    PADDING=$(dd if=/dev/urandom bs=1M count=12 2>/dev/null | base64 | tr -d "\n")
-    echo "  Payload size: ${#PADDING} bytes (base64 expands ~1.33x)"
+    dd if=/dev/urandom bs=1M count=12 2>/dev/null | base64 | tr -d "\n" > /tmp/padding.b64
+    PLEN=$(wc -c < /tmp/padding.b64)
+    echo "  Padding file size: ${PLEN} bytes"
+    printf "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"_p\":\"" > /tmp/payload.json
+    cat /tmp/padding.b64 >> /tmp/payload.json
+    printf "\"}}" >> /tmp/payload.json
+    rm -f /tmp/padding.b64
+    TOTAL=$(wc -c < /tmp/payload.json)
+    echo "  Total payload file: ${TOTAL} bytes"
     echo ""
     echo "  POSTing to mcp-server-everything via ambient mesh..."
     curl -s --max-time 60 \
       -X POST \
       -H "Content-Type: application/json" \
+      -H "Expect:" \
       http://mcp-server-everything.agentgateway-system.svc.cluster.local/ \
-      --data-raw "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"_p\":\"${PADDING}\"}}" \
+      --data-binary @/tmp/payload.json \
       -o /dev/null \
-      -w "  HTTP status : %{http_code}\n  Uploaded   : %{size_upload} bytes\n  Downloaded : %{size_download} bytes\n  Time       : %{time_total}s\n"
+      -w "  HTTP status : %{http_code}\n  Uploaded   : %{size_upload} bytes\n  Time       : %{time_total}s\n" || true
+    rm -f /tmp/payload.json
   '
-  note "size_upload >> 10,000,000 bytes = ztunnel forwarded the full payload without
-        truncation. A response (even HTTP 4xx) = full round-trip completed through HBONE."
+  echo ""
+  echo -e "  Checking ztunnel bytes_recv for this connection..."
+  ${KC} -n istio-system logs -l app=ztunnel --tail=50 2>/dev/null \
+    | grep "mcp-server-everything" \
+    | grep -v "policy rejection" \
+    | grep "bytes_recv" \
+    | tail -3 \
+    | sed 's/^/  /'
+  note "bytes_recv in the ztunnel log above = bytes ztunnel actually received from the
+        sending pod through the HBONE tunnel. A value > 10,000,000 proves the full
+        payload traversed the tunnel. Any HTTP response (even 4xx) = full round-trip."
 else
   warn "Skipping payload test — netshoot pod not found."
 fi

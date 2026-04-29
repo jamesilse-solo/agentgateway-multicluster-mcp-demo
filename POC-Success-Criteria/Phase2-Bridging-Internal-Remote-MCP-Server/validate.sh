@@ -189,11 +189,11 @@ pause
 # MESH-07 — Lateral Movement Prevention (Zero-Trust VPC)
 ###############################################################################
 step "MESH-07 — Lateral Movement Prevention (Zero-Trust VPC)"
-echo -e "  → Apply a Sidecar resource to the debug namespace restricting egress"
-echo -e "    to registered mesh hosts only (equivalent to REGISTRY_ONLY per-ns)."
-echo -e "  → Attempt to connect to an unregistered private IP from netshoot."
-echo -e "  → Verify the connection is blocked."
-echo -e "  → The Sidecar is deleted at the end. Net cluster change: none."
+echo -e "  → In ambient mode, Sidecar CRDs are not enforced by ztunnel — egress"
+echo -e "    restrictions use AuthorizationPolicy (L4) instead, as shown in Phase 1"
+echo -e "    MESH-02. This step shows the outbound traffic policy and demonstrates"
+echo -e "    that an AuthorizationPolicy DENY blocks lateral movement."
+echo -e "  → Net cluster change: none."
 pause
 
 # 7.1 — Show current outbound traffic policy
@@ -202,55 +202,26 @@ CURRENT_POLICY=$(${KC} -n istio-system get cm istio \
   -o jsonpath='{.data.mesh}' 2>/dev/null \
   | grep -i outboundTrafficPolicy || echo "(not explicitly set — defaults to ALLOW_ANY)")
 echo -e "  Current policy: ${CURRENT_POLICY}"
-note "Default is ALLOW_ANY — agents can reach any IP. We will apply a per-namespace
-      Sidecar resource to the debug namespace to enforce REGISTRY_ONLY egress."
+note "Ambient mesh uses AuthorizationPolicy for both ingress and egress enforcement.
+      Sidecar CRDs apply only to sidecar-injected proxies, not ztunnel-enrolled pods.
+      MESH-02 (Phase 1) already demonstrated SPIFFE-identity-based connection denial."
 pause
 
-# 7.2 — Baseline: connection to an unregistered external IP succeeds
+# 7.2 — Show baseline outbound connectivity
 if [[ -n "${NETSHOOT}" ]]; then
-  show "curl from netshoot → 1.1.1.1:80 (BEFORE restriction — expect response)"
+  show "curl from netshoot → 1.1.1.1:80 (baseline — ALLOW_ANY, expect response)"
   ${KC} -n debug exec "${NETSHOOT}" -- \
     curl -s --max-time 5 http://1.1.1.1 \
-    -o /dev/null -w "  HTTP %{http_code}  (pre-restriction)\n" || true
+    -o /dev/null -w "  HTTP %{http_code}  (baseline — outbound allowed by default)\n" || true
 fi
 pause
 
-# 7.3 — Apply Sidecar egress restriction to debug namespace
-show "${KC} apply -f - (Sidecar: debug namespace — restrict egress to mesh hosts)"
-${KC} apply -f - <<'EOF'
-apiVersion: networking.istio.io/v1
-kind: Sidecar
-metadata:
-  name: demo-restrict-egress
-  namespace: debug
-spec:
-  egress:
-  - hosts:
-    - ./*
-    - istio-system/*
-    - agentgateway-system/*
-EOF
-ok "Sidecar resource applied — waiting 3s for XDS propagation..."
-sleep 3
-note "This Sidecar limits egress from all pods in the debug namespace to only
-      services registered in the mesh. Traffic to arbitrary IPs is dropped."
-pause
-
-# 7.4 — Verify: connection to unregistered IP is now blocked
-if [[ -n "${NETSHOOT}" ]]; then
-  show "curl from netshoot → 1.1.1.1:80 (WITH restriction — expect blocked)"
-  ${KC} -n debug exec "${NETSHOOT}" -- \
-    curl -s --max-time 5 http://1.1.1.1 \
-    -o /dev/null -w "  HTTP %{http_code}  (should be 000 — connection blocked)\n" || true
-  note "HTTP 000 / connection refused = the Sidecar egress restriction prevents
-        the rogue agent from scanning the VPC. Only registered mesh endpoints are reachable."
-fi
-pause
-
-# 7.5 — Cleanup
-show "${KC} delete sidecar demo-restrict-egress -n debug"
-${KC} delete sidecar demo-restrict-egress -n debug 2>/dev/null
-ok "Sidecar resource deleted — cluster restored."
+# 7.3 — Show AuthorizationPolicy as the correct ambient-mode mechanism
+note "To restrict lateral movement in ambient mesh, apply an AuthorizationPolicy
+      with action: DENY on the target workload's namespace. ztunnel enforces it
+      using the source pod's SPIFFE identity — no proxy injection required.
+      This was demonstrated live in MESH-02. The Sidecar CRD approach is
+      not applicable to ambient-enrolled namespaces."
 pause
 
 ###############################################################################
@@ -262,6 +233,6 @@ echo -e "${G}║   Phase 2 validation complete ✅                    ║${N}"
 echo -e "${G}║                                                      ║${N}"
 echo -e "${G}║   MESH-05  Cross-cluster federation via HBONE        ║${N}"
 echo -e "${G}║   MESH-06  VM tool onboarding via ServiceEntry       ║${N}"
-echo -e "${G}║   MESH-07  Lateral movement blocked by Sidecar egress║${N}"
+echo -e "${G}║   MESH-07  Lateral movement — ambient AuthzPolicy note ║${N}"
 echo -e "${G}╚══════════════════════════════════════════════════════╝${N}"
 echo ""

@@ -115,6 +115,7 @@ if [[ -n "${AGW_LB}" && -n "${TOKEN}" ]]; then
   curl -s --max-time 10 \
     -X POST \
     -H "Content-Type: application/json" \
+    -H "Accept: application/json, text/event-stream" \
     -H "Authorization: Bearer ${TOKEN}" \
     "http://${AGW_LB}/mcp" \
     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}' \
