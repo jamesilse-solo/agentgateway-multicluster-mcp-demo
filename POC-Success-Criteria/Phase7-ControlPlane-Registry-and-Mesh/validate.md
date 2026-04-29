@@ -1,6 +1,6 @@
 # Control Plane — AgentRegistry, Agent Gateway & Ambient Mesh
 
-Validates CP-02 through CP-05 on the POC clusters.
+Validates CP-02, CP-04, and CP-05 on the POC clusters.
 
 ## Run
 
@@ -13,7 +13,6 @@ KUBE_CONTEXT=cluster1 KUBE_CONTEXT2=cluster2 ./POC-Success-Criteria/Phase7-Contr
 | ID | Requirement | What it proves | Net cluster change |
 |----|-------------|-----------------|-------------------|
 | CP-02 | Central Registry & Health Checks | AgentRegistry catalog reflects live server health; unhealthy servers are excluded from L7 discovery | None |
-| CP-03 | Isolated Admin Workspaces | Workspace CRDs + RBAC limit admin visibility to their namespace boundary | None |
 | CP-04 | Super Admin Master Control | Super Admin account has global cluster-scoped visibility and control | None |
 | CP-05 | OTEL Distributed Tracing | MCP `tools/call` emits a traceparent header; Jaeger shows a single span spanning both clusters | None |
 
@@ -28,7 +27,5 @@ KUBE_CONTEXT=cluster1 KUBE_CONTEXT2=cluster2 ./POC-Success-Criteria/Phase7-Contr
 | AgentRegistry | `agentregistry` | `kubectl --context cluster1 -n agentregistry get pod` |
 | agentgateway-hub | `agentgateway-system` | `kubectl --context cluster1 -n agentgateway-system get svc agentgateway-hub` |
 | OTEL collector (optional) | any | required for CP-05 trace capture |
-
-**Note on CP-03:** Workspace CRDs require Gloo Mesh Enterprise management plane. If not deployed, the script documents the expected configuration pattern and what the isolation boundary would look like.
 
 **Note on CP-05:** Deploy the OTEL stack using `docs.solo.io/agentgateway/2.2.x/observability/otel-stack/` before running this test if distributed traces are not yet emitted.

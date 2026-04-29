@@ -44,12 +44,11 @@ echo ""
 echo -e "${M}╔════════════════════════════════════════════════════════════╗${N}"
 echo -e "${M}║   Control Plane — AgentRegistry, Gateway & Mesh           ║${N}"
 echo -e "${M}║   Hub: ${KC_CTX}   Spoke: ${KC_CTX2}               ║${N}"
-echo -e "${M}║   Tests: CP-02 · 03 · 04 · 05                           ║${N}"
+echo -e "${M}║   Tests: CP-02 · 04 · 05                                ║${N}"
 echo -e "${M}╚════════════════════════════════════════════════════════════╝${N}"
 echo ""
 echo -e "  → Goal: validate the registry reflects health state in real time,"
-echo -e "    admin isolation is enforced, and distributed traces span the"
-echo -e "    full cross-cluster call path via OTEL."
+echo -e "    and distributed traces span the full cross-cluster call path via OTEL."
 pause
 
 # Start port-forward to AgentRegistry
@@ -109,31 +108,6 @@ ${KC} -n "${AGW_NS}" get agentgatewaybackend -o yaml 2>/dev/null \
 note "In production: simulate an unhealthy server by scaling its Deployment to 0.
       The AGW health check will mark it as unhealthy in the backend status, and
       the registry /v0/servers list will reflect the change."
-pause
-
-###############################################################################
-# CP-03 — Isolated Admin Workspaces
-###############################################################################
-step "CP-03 — Isolated Admin Workspaces"
-echo -e "  → Gloo Workspace CRDs bound via Kubernetes RBAC limit each admin's"
-echo -e "    visibility to only the namespaces and MCP servers in their workspace."
-echo -e "  → An admin cannot view or configure resources outside their boundary."
-pause
-
-# CP-03.1 — Show existing workspaces
-show "${KC} get workspace -A 2>/dev/null || ${KC} get workspaces -A 2>/dev/null"
-${KC} get workspace -A 2>/dev/null \
-  || ${KC} api-resources 2>/dev/null | grep -i workspace \
-  || echo "  (Workspace CRD not installed — requires Gloo Mesh Enterprise management plane)"
-note "Workspace CRDs define administrative boundaries. A BU admin can only
-      see and modify AgentGateway routes and policies in their assigned workspace.
-      Cross-workspace access requires an explicit WorkspaceSettings binding."
-pause
-
-# CP-03.2 — Show RBAC bindings
-show "${KC} get clusterrolebinding -o wide | grep -i workspace"
-${KC} get clusterrolebinding -o wide 2>/dev/null | grep -i workspace | head -5 \
-  || echo "  (no workspace-specific ClusterRoleBindings found)"
 pause
 
 ###############################################################################
@@ -249,7 +223,6 @@ echo -e "${G}╔═════════════════════�
 echo -e "${G}║   Control Plane validation complete ✅              ║${N}"
 echo -e "${G}║                                                      ║${N}"
 echo -e "${G}║   CP-02  Registry health checks + catalog accuracy   ║${N}"
-echo -e "${G}║   CP-03  Isolated admin workspaces (RBAC)            ║${N}"
 echo -e "${G}║   CP-04  Super admin global visibility               ║${N}"
 echo -e "${G}║   CP-05  OTEL distributed tracing (cross-cluster)    ║${N}"
 echo -e "${G}╚══════════════════════════════════════════════════════╝${N}"
