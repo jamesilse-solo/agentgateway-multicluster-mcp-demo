@@ -44,7 +44,7 @@ C1="${CLUSTER1_CONTEXT:-cluster1}"
 C2="${CLUSTER2_CONTEXT:-cluster2}"
 AGW_NS="${AGW_NS:-agentgateway-system}"
 GM_NS="${GM_NS:-gloo-mesh}"
-GLOO_VERSION="${GLOO_VERSION:-2.13.0}"
+GLOO_VERSION="${GLOO_VERSION:-2.12.3}"
 REGISTRY="${REGISTRY:-}"   # Set to override for air-gapped installs, e.g. my-registry.internal
 
 KC1="kubectl --context ${C1}"
@@ -74,53 +74,33 @@ ${KC2} label namespace "${GM_NS}" istio.io/dataplane-mode=ambient --overwrite
 ok "Namespaces ready on both clusters"
 
 ###############################################################################
-# 2. Generate relay TLS certs (self-signed root shared across clusters)
+# 2. Clear any pre-existing relay secrets on cluster1 so the Helm chart can
+#    create and own them (the mgmt plane chart generates the root CA, server
+#    cert, and identity token automatically on first install).
 ###############################################################################
-log "Generating relay mTLS certificates"
-RELAY_TMP=$(mktemp -d)
-trap 'rm -rf "${RELAY_TMP}"' EXIT
+log "Clearing pre-existing relay secrets on cluster1 (Helm will recreate)"
+${KC1} -n "${GM_NS}" delete secret relay-root-tls-secret relay-server-tls-secret \
+  relay-tls-signing-secret relay-identity-token-secret 2>/dev/null || true
+ok "Pre-existing relay secrets cleared"
 
-# Root CA for relay
-openssl req -x509 -newkey rsa:4096 -keyout "${RELAY_TMP}/relay-root.key" \
-  -out "${RELAY_TMP}/relay-root.crt" -days 3650 -nodes \
-  -subj "/CN=gloo-mesh-relay-root" &>/dev/null
+###############################################################################
+# 3. Install Gloo Mesh CRDs on both clusters
+###############################################################################
+log "Installing Gloo Mesh CRDs on both clusters (v${GLOO_VERSION})"
 
-# Server cert for management server
-openssl req -newkey rsa:4096 -keyout "${RELAY_TMP}/relay-server.key" \
-  -out "${RELAY_TMP}/relay-server.csr" -nodes \
-  -subj "/CN=gloo-mesh-mgmt-server" &>/dev/null
-openssl x509 -req -in "${RELAY_TMP}/relay-server.csr" \
-  -CA "${RELAY_TMP}/relay-root.crt" -CAkey "${RELAY_TMP}/relay-root.key" \
-  -CAcreateserial -out "${RELAY_TMP}/relay-server.crt" -days 3650 &>/dev/null
+# CRDs live in templates/ (not crds/) in this chart, so render via helm template
+# and apply with server-side apply to coexist with enterprise-agentgateway-crds.
+RENDERED_CRDS=$(helm template gloo-platform-crds gloo-platform/gloo-platform-crds \
+  --version "${GLOO_VERSION}" 2>/dev/null)
 
-# Client cert for agents
-openssl req -newkey rsa:4096 -keyout "${RELAY_TMP}/relay-client.key" \
-  -out "${RELAY_TMP}/relay-client.csr" -nodes \
-  -subj "/CN=gloo-mesh-agent" &>/dev/null
-openssl x509 -req -in "${RELAY_TMP}/relay-client.csr" \
-  -CA "${RELAY_TMP}/relay-root.crt" -CAkey "${RELAY_TMP}/relay-root.key" \
-  -CAcreateserial -out "${RELAY_TMP}/relay-client.crt" -days 3650 &>/dev/null
-
-# Push secrets to both clusters
-for KC_CMD in "${KC1}" "${KC2}"; do
-  ${KC_CMD} -n "${GM_NS}" create secret generic relay-root-tls-secret \
-    --from-file=ca.crt="${RELAY_TMP}/relay-root.crt" \
-    --dry-run=client -o yaml | ${KC_CMD} apply -f -
-  ${KC_CMD} -n "${GM_NS}" create secret generic relay-client-tls-secret \
-    --from-file=tls.crt="${RELAY_TMP}/relay-client.crt" \
-    --from-file=tls.key="${RELAY_TMP}/relay-client.key" \
-    --from-file=ca.crt="${RELAY_TMP}/relay-root.crt" \
-    --dry-run=client -o yaml | ${KC_CMD} apply -f -
+for KC_CMD_CTX in "${C1}" "${C2}"; do
+  echo "${RENDERED_CRDS}" | kubectl --context "${KC_CMD_CTX}" apply \
+    --server-side --force-conflicts -f - 2>&1 | grep -v "^Warning:" || true
 done
-${KC1} -n "${GM_NS}" create secret generic relay-server-tls-secret \
-  --from-file=tls.crt="${RELAY_TMP}/relay-server.crt" \
-  --from-file=tls.key="${RELAY_TMP}/relay-server.key" \
-  --from-file=ca.crt="${RELAY_TMP}/relay-root.crt" \
-  --dry-run=client -o yaml | ${KC1} apply -f -
-ok "Relay TLS secrets created on both clusters"
+ok "CRDs applied on both clusters"
 
 ###############################################################################
-# 3. Install Gloo Mesh management plane on cluster1
+# 4. Install Gloo Mesh management plane on cluster1
 ###############################################################################
 log "Installing Gloo Mesh Enterprise management plane on cluster1 (v${GLOO_VERSION})"
 
@@ -157,7 +137,6 @@ glooMgmtServer:
   relay:
     serverAddress: "gloo-mesh-mgmt-server:9900"
     serverTlsSecretName: relay-server-tls-secret
-    signingTlsSecretName: relay-server-tls-secret
     rootTlsSecretName: relay-root-tls-secret
 
 glooAgent:
@@ -176,17 +155,13 @@ telemetryGateway:
     type: ClusterIP
 
 telemetryCollector:
-  enabled: true
-  config:
-    exporters:
-      otlp:
-        endpoint: gloo-telemetry-gateway.gloo-mesh.svc:4317
+  enabled: false   # disabled: t3.large nodes have insufficient CPU for the DaemonSet
 EOF
 
 ok "Management plane installed on cluster1"
 
 ###############################################################################
-# 4. Expose management server relay as LoadBalancer (for cluster2 agent)
+# 5. Expose management server relay as LoadBalancer (for cluster2 agent)
 ###############################################################################
 log "Exposing management server relay as LoadBalancer"
 
@@ -219,7 +194,57 @@ done
 ok "Relay LB: ${RELAY_LB}"
 
 ###############################################################################
-# 5. Install Gloo Mesh agent on cluster1 (connects to local management server)
+# 6. Distribute relay root cert to cluster2
+#    The mgmt plane Helm chart created relay-root-tls-secret on cluster1.
+#    Agents on cluster2 need the ca.crt as their trust anchor, and a client
+#    cert signed by that root (generated here with openssl).
+###############################################################################
+log "Distributing relay root cert to cluster2"
+
+RELAY_TMP=$(mktemp -d)
+trap 'rm -rf "${RELAY_TMP}"' EXIT
+
+# Extract root CA cert + key from the mgmt-plane-created secret on cluster1
+${KC1} -n "${GM_NS}" get secret relay-root-tls-secret \
+  -o jsonpath='{.data.ca\.crt}' | base64 -d > "${RELAY_TMP}/relay-root.crt"
+${KC1} -n "${GM_NS}" get secret relay-root-tls-secret \
+  -o jsonpath='{.data.tls\.key}' | base64 -d > "${RELAY_TMP}/relay-root.key"
+
+# Generate client cert for agents, signed by the mgmt-plane root.
+# SAN is required — modern TLS (and Gloo Mesh pre-start check) rejects certs without it.
+cat > "${RELAY_TMP}/client-ext.cnf" <<EXTEOF
+[v3_req]
+subjectAltName = DNS:${C2}, DNS:gloo-mesh-agent.gloo-mesh
+EXTEOF
+openssl req -newkey rsa:4096 -keyout "${RELAY_TMP}/relay-client.key" \
+  -out "${RELAY_TMP}/relay-client.csr" -nodes \
+  -subj "/CN=${C2}" &>/dev/null
+openssl x509 -req -in "${RELAY_TMP}/relay-client.csr" \
+  -CA "${RELAY_TMP}/relay-root.crt" -CAkey "${RELAY_TMP}/relay-root.key" \
+  -CAcreateserial -out "${RELAY_TMP}/relay-client.crt" -days 3650 \
+  -extfile "${RELAY_TMP}/client-ext.cnf" -extensions v3_req &>/dev/null
+
+# Push relay secrets to cluster2
+${KC2} -n "${GM_NS}" create secret generic relay-root-tls-secret \
+  --from-file=ca.crt="${RELAY_TMP}/relay-root.crt" \
+  --dry-run=client -o yaml | ${KC2} apply -f -
+${KC2} -n "${GM_NS}" create secret generic relay-client-tls-secret \
+  --from-file=tls.crt="${RELAY_TMP}/relay-client.crt" \
+  --from-file=tls.key="${RELAY_TMP}/relay-client.key" \
+  --from-file=ca.crt="${RELAY_TMP}/relay-root.crt" \
+  --dry-run=client -o yaml | ${KC2} apply -f -
+
+# Also create relay-client-tls-secret on cluster1 for the local agent
+${KC1} -n "${GM_NS}" create secret generic relay-client-tls-secret \
+  --from-file=tls.crt="${RELAY_TMP}/relay-client.crt" \
+  --from-file=tls.key="${RELAY_TMP}/relay-client.key" \
+  --from-file=ca.crt="${RELAY_TMP}/relay-root.crt" \
+  --dry-run=client -o yaml | ${KC1} apply -f -
+
+ok "Relay certs distributed to both clusters"
+
+###############################################################################
+# 8. Install Gloo Mesh agent on cluster1 (connects to local management server)
 ###############################################################################
 log "Installing Gloo Mesh agent on cluster1"
 
@@ -258,17 +283,13 @@ telemetryGateway:
   enabled: false
 
 telemetryCollector:
-  enabled: true
-  config:
-    exporters:
-      otlp:
-        endpoint: gloo-telemetry-gateway.gloo-mesh.svc:4317
+  enabled: false
 EOF
 
 ok "Agent installed on cluster1"
 
 ###############################################################################
-# 6. Install Gloo Mesh agent on cluster2 (connects to cluster1 relay LB)
+# 9. Install Gloo Mesh agent on cluster2 (connects to cluster1 relay LB)
 ###############################################################################
 log "Installing Gloo Mesh agent on cluster2 (relay → ${RELAY_LB}:9900)"
 
@@ -307,23 +328,44 @@ telemetryGateway:
   enabled: false
 
 telemetryCollector:
-  enabled: true
-  config:
-    exporters:
-      otlp:
-        endpoint: ${RELAY_LB}:4317
+  enabled: false
 EOF
 
 ok "Agent installed on cluster2"
 
 ###############################################################################
-# 7. Verify both clusters are registered
+# 10. Register clusters in management plane
+###############################################################################
+log "Registering clusters in management plane"
+
+${KC1} apply -f - <<EOF
+apiVersion: admin.gloo.solo.io/v2
+kind: KubernetesCluster
+metadata:
+  name: ${C1}
+  namespace: ${GM_NS}
+spec:
+  clusterDomain: cluster.local
+---
+apiVersion: admin.gloo.solo.io/v2
+kind: KubernetesCluster
+metadata:
+  name: ${C2}
+  namespace: ${GM_NS}
+spec:
+  clusterDomain: cluster.local
+EOF
+
+ok "KubernetesCluster CRs created for ${C1} and ${C2}"
+
+###############################################################################
+# 11. Verify both clusters are registered
 ###############################################################################
 log "Verifying cluster registration (waiting up to 90s)"
 
 for i in $(seq 1 18); do
   CLUSTERS=$(${KC1} -n "${GM_NS}" get kubernetesclusters 2>/dev/null \
-    | grep -c "True" || echo "0")
+    | grep -c "ACCEPTED" || echo "0")
   [[ "${CLUSTERS}" -ge 2 ]] && { ok "Both clusters registered (${CLUSTERS} KubernetesClusters with Ready=True)"; break; }
   [[ ${i} -eq 18 ]] && {
     echo "  Registered so far:"
@@ -334,7 +376,7 @@ for i in $(seq 1 18); do
 done
 
 ###############################################################################
-# 8. Add AgentGateway HTTPRoute for Gloo Mesh UI
+# 12. Add AgentGateway HTTPRoute for Gloo Mesh UI
 ###############################################################################
 log "Adding AgentGateway route for Gloo Mesh UI (/gloo-mesh)"
 
@@ -378,7 +420,7 @@ EOF
 ok "AgentGateway route added: /gloo-mesh → gloo-mesh-ui:8090"
 
 ###############################################################################
-# 9. Summary
+# 13. Summary
 ###############################################################################
 log "Gloo Mesh Enterprise ${GLOO_VERSION} installed"
 
@@ -405,7 +447,7 @@ ${KC1} get pods -n "${GM_NS}"
 echo ""
 
 ###############################################################################
-# 10. Air-gap image list (always printed for reference)
+# 14. Air-gap image list (always printed for reference)
 ###############################################################################
 log "Container images required for air-gapped installation"
 echo ""
@@ -414,13 +456,13 @@ echo "  environment. Then set REGISTRY=<your-registry> when running this script.
 echo ""
 echo "  # Gloo Mesh Enterprise ${GLOO_VERSION}"
 cat <<'IMAGELIST'
-  gcr.io/gloo-mesh/gloo-mesh-mgmt-server:2.13.0
-  gcr.io/gloo-mesh/gloo-mesh-agent:2.13.0
-  gcr.io/gloo-mesh/gloo-mesh-ui:2.13.0
-  gcr.io/gloo-mesh/gloo-mesh-analyzer:2.13.0
-  gcr.io/gloo-mesh/gloo-mesh-apiserver:2.13.0
-  gcr.io/gloo-mesh/gloo-mesh-insights:2.13.0
-  gcr.io/gloo-mesh/gloo-mesh-envoy:2.13.0
+  gcr.io/gloo-mesh/gloo-mesh-mgmt-server:2.12.3
+  gcr.io/gloo-mesh/gloo-mesh-agent:2.12.3
+  gcr.io/gloo-mesh/gloo-mesh-ui:2.12.3
+  gcr.io/gloo-mesh/gloo-mesh-analyzer:2.12.3
+  gcr.io/gloo-mesh/gloo-mesh-apiserver:2.12.3
+  gcr.io/gloo-mesh/gloo-mesh-insights:2.12.3
+  gcr.io/gloo-mesh/gloo-mesh-envoy:2.12.3
   gcr.io/gloo-mesh/otel-collector:0.2.0
   gcr.io/gloo-mesh/rate-limiter:0.11.7
   gcr.io/gloo-mesh/redis:7.2.4-alpine

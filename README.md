@@ -374,17 +374,17 @@ curl -si "http://${AGW_LB}/mcp" \
 |-------|----------|
 | agentregistry | `oci://ghcr.io/agentregistry-dev/agentregistry/charts/agentregistry` |
 
-### Gloo Mesh Enterprise Images (v2.13.0)
+### Gloo Mesh Enterprise Images (v2.12.3)
 
 | Image | Full Path |
 |-------|-----------|
-| mgmt-server | `gcr.io/gloo-mesh/gloo-mesh-mgmt-server:2.13.0` |
-| agent | `gcr.io/gloo-mesh/gloo-mesh-agent:2.13.0` |
-| ui | `gcr.io/gloo-mesh/gloo-mesh-ui:2.13.0` |
-| analyzer | `gcr.io/gloo-mesh/gloo-mesh-analyzer:2.13.0` |
-| apiserver | `gcr.io/gloo-mesh/gloo-mesh-apiserver:2.13.0` |
-| insights | `gcr.io/gloo-mesh/gloo-mesh-insights:2.13.0` |
-| envoy (UI sidecar) | `gcr.io/gloo-mesh/gloo-mesh-envoy:2.13.0` |
+| mgmt-server | `gcr.io/gloo-mesh/gloo-mesh-mgmt-server:2.12.3` |
+| agent | `gcr.io/gloo-mesh/gloo-mesh-agent:2.12.3` |
+| ui | `gcr.io/gloo-mesh/gloo-mesh-ui:2.12.3` |
+| analyzer | `gcr.io/gloo-mesh/gloo-mesh-analyzer:2.12.3` |
+| apiserver | `gcr.io/gloo-mesh/gloo-mesh-apiserver:2.12.3` |
+| insights | `gcr.io/gloo-mesh/gloo-mesh-insights:2.12.3` |
+| envoy (UI sidecar) | `gcr.io/gloo-mesh/gloo-mesh-envoy:2.12.3` |
 | otel-collector | `gcr.io/gloo-mesh/otel-collector:0.2.0` |
 | rate-limiter | `gcr.io/gloo-mesh/rate-limiter:0.11.7` |
 | redis | `gcr.io/gloo-mesh/redis:7.2.4-alpine` |
@@ -399,7 +399,7 @@ curl -si "http://${AGW_LB}/mcp" \
 | Chart | Source |
 |-------|--------|
 | gloo-platform | `helm repo add gloo-platform https://storage.googleapis.com/gloo-platform/helm-charts` |
-| chart name | `gloo-platform/gloo-platform --version 2.13.0` |
+| chart name | `gloo-platform/gloo-platform --version 2.12.3` |
 
 ### Dex OIDC Provider (Phase 3)
 
@@ -1164,7 +1164,7 @@ Installs Gloo Mesh Enterprise on both clusters — management plane on cluster1 
 | `GLOO_MESH_LICENSE_KEY` | **Yes** | — | Gloo Mesh Enterprise license key |
 | `CLUSTER1_CONTEXT` | No | `cluster1` | Hub cluster kubectl context |
 | `CLUSTER2_CONTEXT` | No | `cluster2` | Spoke cluster kubectl context |
-| `GLOO_VERSION` | No | `2.13.0` | Gloo Mesh Enterprise version |
+| `GLOO_VERSION` | No | `2.12.3` | Gloo Mesh Enterprise version |
 | `GM_NS` | No | `gloo-mesh` | Namespace for Gloo Mesh components |
 | `AGW_NS` | No | `agentgateway-system` | AgentGateway namespace (for UI route) |
 | `REGISTRY` | No | _(unset)_ | Private registry prefix for air-gapped environments |
