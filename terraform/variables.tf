@@ -13,13 +13,13 @@ variable "account_id" {
 variable "cluster_name_prefix" {
   description = "Prefix for cluster names"
   type        = string
-  default     = "mcp-poc"
+  default     = "singtel-jamesilse"
 }
 
 variable "node_instance_type" {
   description = "Instance type for EKS nodes"
   type        = string
-  default     = "t3.large"
+  default     = "t3.xlarge"
 }
 
 variable "node_count" {

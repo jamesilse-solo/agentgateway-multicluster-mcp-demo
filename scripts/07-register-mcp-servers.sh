@@ -4,7 +4,7 @@ set -euo pipefail
 ###############################################################################
 # 07-register-mcp-servers.sh — Register MCP servers in AgentRegistry
 #
-# Registers three MCP servers into the AgentRegistry OSS catalog:
+# Registers three MCP servers into the AgentRegistry Enterprise catalog:
 #   1. com.amazonaws/mcp-everything-local  — mcp-server-everything on cluster1
 #                                            served via AgentGateway hub at /mcp
 #   2. com.amazonaws/mcp-everything-remote — mcp-server-everything on cluster2
@@ -29,10 +29,10 @@ set -euo pipefail
 KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1}"
 AGW_NAMESPACE="${AGW_NAMESPACE:-agentgateway-system}"
 AREG_NAMESPACE="${AREG_NAMESPACE:-agentregistry}"
-AREG_SVC="${AREG_SVC:-agentregistry}"
+AREG_SVC="${AREG_SVC:-agentregistry-agentregistry-enterprise}"
 AREG_LOCAL_PORT="${AREG_LOCAL_PORT:-8080}"
-# OSS service exposes HTTP on port 12121 (→ container 8080)
-AREG_SVC_PORT="${AREG_SVC_PORT:-12121}"
+# Enterprise service exposes HTTP UI + API directly on port 8080
+AREG_SVC_PORT="${AREG_SVC_PORT:-8080}"
 
 KC="kubectl --context ${KUBE_CONTEXT}"
 SCHEMA="https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json"

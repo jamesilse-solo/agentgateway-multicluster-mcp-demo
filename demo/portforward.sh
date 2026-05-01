@@ -5,18 +5,31 @@ set -euo pipefail
 # portforward.sh — Set up all port-forwards for the demo
 #
 # Starts port-forwards in the background for:
-#   1. AgentRegistry UI        → http://localhost:8080
-#   2. AgentGateway Enterprise UI → http://localhost:9978
-#   3. AgentGateway MCP endpoint  → prints external LB address (no port-forward needed)
+#   1. AgentRegistry Enterprise UI     → http://localhost:8080
+#      MCP server catalog, discovery, traffic logs.
+#      Demo auth enabled — log in with any credentials.
+#
+#   2. AgentGateway Enterprise UI      → http://localhost:4000
+#      Routes, backends, auth policies, rate limits, guardrails.
+#      Control-plane governance view (solo-enterprise-ui).
+#
+#   3. Gloo Mesh Enterprise UI         → http://localhost:8090
+#      Cross-cluster federation, ambient mesh topology,
+#      east-west gateway health, cluster registration.
+#
+#   4. AgentGateway MCP endpoints      → prints external LB addresses
 #
 # Usage:
 #   ./demo/portforward.sh
-#   KUBE_CONTEXT=cluster1 ./demo/portforward.sh
+#   KUBE_CONTEXT=cluster1-singtel ./demo/portforward.sh
 ###############################################################################
 
 KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1}"
 AGW_NAMESPACE="${AGW_NAMESPACE:-agentgateway-system}"
 AREG_NAMESPACE="${AREG_NAMESPACE:-agentregistry}"
+GM_NAMESPACE="${GM_NAMESPACE:-gloo-mesh}"
+AREG_SVC="${AREG_SVC:-agentregistry-agentregistry-enterprise}"
+AGW_MGMT_SVC="${AGW_MGMT_SVC:-solo-enterprise-ui}"
 KC="kubectl --context ${KUBE_CONTEXT}"
 
 BOLD='\033[1m'
@@ -37,110 +50,121 @@ info "Cluster context: ${KUBE_CONTEXT}"
 echo ""
 
 ###############################################################################
-# 0. Clean up any existing port-forwards for our ports
+# 0. Clean up any existing port-forwards on our ports
 ###############################################################################
-pkill -f "port-forward.*agentregistry.*8080"    2>/dev/null || true
-pkill -f "port-forward.*enterprise-agentgateway.*9978" 2>/dev/null || true
-pkill -f "port-forward.*enterprise-agentgateway.*9093" 2>/dev/null || true
+pkill -f "port-forward.*agentregistry.*8080"   2>/dev/null || true
+pkill -f "port-forward.*solo-enterprise-ui.*4000" 2>/dev/null || true
+pkill -f "port-forward.*gloo-mesh-ui.*8090"    2>/dev/null || true
 sleep 1
 
 ###############################################################################
-# 1. AgentRegistry UI  →  8080:12121
+# 1. AgentRegistry Enterprise UI  →  8080:8080
 ###############################################################################
-hdr "1. AgentRegistry UI"
+hdr "1. AgentRegistry Enterprise UI"
 
-${KC} -n "${AREG_NAMESPACE}" port-forward svc/agentregistry 8080:12121 &>/dev/null &
+${KC} -n "${AREG_NAMESPACE}" port-forward "svc/${AREG_SVC}" 8080:8080 &>/dev/null &
 PF_AREG=$!
 echo -e "  Started (PID ${PF_AREG}), waiting for readiness..."
 
-for i in $(seq 1 15); do
+AREG_OK=false
+for i in $(seq 1 20); do
   if curl -s --max-time 2 "http://localhost:8080/v0/servers" &>/dev/null; then
-    ok "AgentRegistry UI ready — http://localhost:8080"
+    ok "AgentRegistry Enterprise UI ready — http://localhost:8080"
+    AREG_OK=true
     break
   fi
-  [[ ${i} -eq 15 ]] && { fail "AgentRegistry UI not responding after 15s"; }
   sleep 1
 done
+[[ "${AREG_OK}" == "false" ]] && warn "AgentRegistry UI not responding — check: ${KC} -n ${AREG_NAMESPACE} get pod"
 
 ###############################################################################
-# 2. AgentGateway Enterprise UI  →  9978 (fallback: 9093)
+# 2. AgentGateway Enterprise UI  →  4000:80
 ###############################################################################
 hdr "2. AgentGateway Enterprise UI"
 
-# Try primary port 9978 first
-${KC} -n "${AGW_NAMESPACE}" port-forward svc/enterprise-agentgateway 9978:9978 &>/dev/null &
+${KC} -n "${AGW_NAMESPACE}" port-forward "svc/${AGW_MGMT_SVC}" 4000:80 &>/dev/null &
 PF_AGW_UI=$!
-echo -e "  Trying port 9978 (PID ${PF_AGW_UI})..."
+echo -e "  Started (PID ${PF_AGW_UI}), waiting for readiness..."
 
-AGWUI_PORT=""
-for i in $(seq 1 8); do
-  if curl -s --max-time 2 "http://localhost:9978" &>/dev/null; then
-    AGWUI_PORT="9978"
-    ok "AgentGateway Enterprise UI ready — http://localhost:9978"
+AGW_UI_OK=false
+for i in $(seq 1 20); do
+  if curl -s --max-time 2 "http://localhost:4000" &>/dev/null; then
+    ok "AgentGateway Enterprise UI ready — http://localhost:4000"
+    AGW_UI_OK=true
     break
   fi
   sleep 1
 done
+[[ "${AGW_UI_OK}" == "false" ]] && warn "AgentGateway UI not responding — check: ${KC} -n ${AGW_NAMESPACE} get pod -l app=solo-enterprise-ui"
 
-# Fallback: try 9093
-if [[ -z "${AGWUI_PORT}" ]]; then
-  kill "${PF_AGW_UI}" 2>/dev/null || true
+###############################################################################
+# 3. Gloo Mesh Enterprise UI  →  8090:8090
+###############################################################################
+hdr "3. Gloo Mesh Enterprise UI"
+
+${KC} -n "${GM_NAMESPACE}" port-forward svc/gloo-mesh-ui 8090:8090 &>/dev/null &
+PF_GME=$!
+echo -e "  Started (PID ${PF_GME}), waiting for readiness..."
+
+GME_OK=false
+for i in $(seq 1 15); do
+  if curl -s --max-time 2 "http://localhost:8090" &>/dev/null; then
+    ok "Gloo Mesh Enterprise UI ready — http://localhost:8090"
+    GME_OK=true
+    break
+  fi
   sleep 1
-  ${KC} -n "${AGW_NAMESPACE}" port-forward svc/enterprise-agentgateway 9093:9093 &>/dev/null &
-  PF_AGW_UI=$!
-  echo -e "  Port 9978 did not respond — trying 9093 (PID ${PF_AGW_UI})..."
-
-  for i in $(seq 1 8); do
-    if curl -s --max-time 2 "http://localhost:9093" &>/dev/null; then
-      AGWUI_PORT="9093"
-      ok "AgentGateway Enterprise UI ready — http://localhost:9093"
-      break
-    fi
-    sleep 1
-  done
-fi
-
-if [[ -z "${AGWUI_PORT}" ]]; then
-  warn "AgentGateway Enterprise UI did not respond on 9978 or 9093."
-  warn "Check: ${KC} -n ${AGW_NAMESPACE} get svc enterprise-agentgateway"
-  AGWUI_PORT="9978 (may not be responding)"
-fi
+done
+[[ "${GME_OK}" == "false" ]] && warn "Gloo Mesh UI not responding — check: ${KC} -n ${GM_NAMESPACE} get pod -l app=gloo-mesh-ui"
 
 ###############################################################################
-# 3. AgentGateway MCP endpoint — external LB (no port-forward needed)
+# 4. AgentGateway MCP endpoints — external LBs (no port-forward needed)
 ###############################################################################
-hdr "3. AgentGateway MCP Endpoint"
+hdr "4. AgentGateway MCP Endpoints"
 
 AGW_LB=$(${KC} -n "${AGW_NAMESPACE}" get svc agentgateway-hub \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+AGW_LB2=$(kubectl --context "${KUBE_CONTEXT/cluster1/cluster2}" -n "${AGW_NAMESPACE}" \
+  get svc agentgateway-spoke \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
 
 if [[ -n "${AGW_LB}" ]]; then
-  ok "AgentGateway LB: ${AGW_LB}"
-  info "MCP endpoint:  http://${AGW_LB}/mcp"
-  info "Remote route:  http://${AGW_LB}/mcp/remote"
-  info "Registry MCP:  http://${AGW_LB}/mcp/registry"
+  ok "Cluster 1 AGW: ${AGW_LB}"
+  info "  /mcp          → local MCP server (cluster 1)"
+  info "  /mcp/remote   → federated MCP server (cluster 2 via HBONE)"
+  info "  /mcp/registry → AgentRegistry catalog"
 else
-  warn "Could not resolve AgentGateway LB."
-  warn "Check: ${KC} -n ${AGW_NAMESPACE} get svc agentgateway-hub"
+  warn "Could not resolve cluster 1 AGW LB"
+fi
+
+if [[ -n "${AGW_LB2}" ]]; then
+  ok "Cluster 2 AGW: ${AGW_LB2}"
+  info "  /mcp          → local MCP server (cluster 2)"
+  info "  /mcp/remote   → federated MCP server (cluster 1 via HBONE)"
+else
+  warn "Could not resolve cluster 2 AGW LB"
 fi
 
 ###############################################################################
-# 4. Summary
+# 5. Summary
 ###############################################################################
 echo ""
-echo -e "${BOLD}${CYAN}╔══════════════════════════════════════════════════════════╗${RESET}"
-echo -e "${BOLD}${CYAN}║  Demo URLs                                               ║${RESET}"
-echo -e "${BOLD}${CYAN}╠══════════════════════════════════════════════════════════╣${RESET}"
-echo -e "${BOLD}${CYAN}║${RESET}  AgentRegistry UI     →  ${GREEN}http://localhost:8080${RESET}           ${BOLD}${CYAN}║${RESET}"
-echo -e "${BOLD}${CYAN}║${RESET}  AgentGateway UI      →  ${GREEN}http://localhost:${AGWUI_PORT}${RESET}  ${BOLD}${CYAN}║${RESET}"
+echo -e "${BOLD}${CYAN}╔═══════════════════════════════════════════════════════════════════╗${RESET}"
+echo -e "${BOLD}${CYAN}║  Demo URLs                                                        ║${RESET}"
+echo -e "${BOLD}${CYAN}╠═══════════════════════════════════════════════════════════════════╣${RESET}"
+echo -e "${BOLD}${CYAN}║${RESET}  AgentRegistry UI         →  ${GREEN}http://localhost:8080${RESET}             ${BOLD}${CYAN}║${RESET}"
+echo -e "${BOLD}${CYAN}║${RESET}  AgentGateway Enterprise  →  ${GREEN}http://localhost:4000${RESET}             ${BOLD}${CYAN}║${RESET}"
+echo -e "${BOLD}${CYAN}║${RESET}  Gloo Mesh UI             →  ${GREEN}http://localhost:8090${RESET}             ${BOLD}${CYAN}║${RESET}"
 if [[ -n "${AGW_LB}" ]]; then
-echo -e "${BOLD}${CYAN}║${RESET}  AGW MCP endpoint     →  ${GREEN}http://${AGW_LB}/mcp${RESET}"
+echo -e "${BOLD}${CYAN}║${RESET}  Cluster 1 /mcp           →  ${GREEN}http://${AGW_LB}/mcp${RESET}"
 fi
-echo -e "${BOLD}${CYAN}╚══════════════════════════════════════════════════════════╝${RESET}"
+if [[ -n "${AGW_LB2}" ]]; then
+echo -e "${BOLD}${CYAN}║${RESET}  Cluster 2 /mcp           →  ${GREEN}http://${AGW_LB2}/mcp${RESET}"
+fi
+echo -e "${BOLD}${CYAN}╚═══════════════════════════════════════════════════════════════════╝${RESET}"
 echo ""
 echo -e "  ${YELLOW}Press Ctrl-C to stop all port-forwards.${RESET}"
 echo ""
 
-# Keep the script alive so port-forwards stay up
-trap 'echo ""; echo "Stopping port-forwards..."; kill "${PF_AREG}" "${PF_AGW_UI}" 2>/dev/null || true' EXIT INT TERM
+trap 'echo ""; echo "Stopping port-forwards..."; kill "${PF_AREG}" "${PF_AGW_UI}" "${PF_GME}" 2>/dev/null || true' EXIT INT TERM
 wait

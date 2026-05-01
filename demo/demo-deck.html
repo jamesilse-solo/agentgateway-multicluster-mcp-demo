@@ -270,7 +270,7 @@
     <div class="slide-body" style="padding-bottom:0.5rem;">
       <div class="overline">Infrastructure Overview</div>
       <h2 class="section-title">Two Clusters. One Control Point. <span>Zero Agent Changes.</span></h2>
-      <p class="section-sub" style="margin-bottom:0.75rem;">AgentGateway Hub on AWS EKS federates MCP calls to on-prem cluster2 over ambient HBONE mesh.</p>
+      <p class="section-sub" style="margin-bottom:0.75rem;">Two EKS clusters. AgentGateway on each cluster federates MCP calls over ambient HBONE mesh — bidirectionally.</p>
       <div class="arch-wrap">
         <div class="arch-svg-container">
 
@@ -336,7 +336,7 @@
               fill="rgba(128,35,195,0.04)" stroke="rgba(128,35,195,0.35)"
               stroke-width="1" stroke-dasharray="6,3"/>
         <text x="25" y="98" font-family="DM Mono" font-size="7.5"
-              fill="rgba(128,35,195,0.6)" letter-spacing="0.8">CLUSTER 1 · HUB</text>
+              fill="rgba(128,35,195,0.6)" letter-spacing="0.8">CLUSTER 1</text>
 
         <!-- AgentGateway Enterprise — hero -->
         <rect x="20" y="104" width="215" height="74" rx="8"
@@ -348,7 +348,7 @@
         <text x="127" y="144" text-anchor="middle"
               font-family="DM Mono" font-size="8" fill="#CC85FF">ExtAuth · Redis · Rate Limiting</text>
         <text x="127" y="157" text-anchor="middle"
-              font-family="DM Sans" font-size="8.5" fill="#9DA1BD">Hub Proxy · OIDC · JWT validation</text>
+              font-family="DM Sans" font-size="8.5" fill="#9DA1BD">Cluster 1 · OIDC · JWT validation</text>
         <text x="127" y="170" text-anchor="middle"
               font-family="DM Mono" font-size="7.5" fill="rgba(128,35,195,0.65)">MCP endpoint: /mcp</text>
 
@@ -402,15 +402,15 @@
               fill="rgba(255,167,133,0.03)" stroke="rgba(255,167,133,0.3)"
               stroke-width="1" stroke-dasharray="6,3"/>
         <text x="530" y="98" font-family="DM Mono" font-size="7.5"
-              fill="rgba(255,167,133,0.55)" letter-spacing="0.8">CLUSTER 2 · SPOKE</text>
+              fill="rgba(255,167,133,0.55)" letter-spacing="0.8">CLUSTER 2</text>
 
-        <!-- AGW Spoke -->
+        <!-- AGW Cluster2 -->
         <rect x="526" y="104" width="314" height="52" rx="6"
               fill="#1E2035" stroke="rgba(255,167,133,0.3)" stroke-width="1"/>
         <text x="683" y="127" text-anchor="middle"
-              font-family="Figtree" font-weight="600" font-size="11" fill="white">AGW Spoke Proxy</text>
+              font-family="Figtree" font-weight="600" font-size="11" fill="white">AgentGateway Enterprise</text>
         <text x="683" y="144" text-anchor="middle"
-              font-family="DM Mono" font-size="8.5" fill="#9DA1BD">agentgateway-spoke · routes: /mcp/remote</text>
+              font-family="DM Mono" font-size="8.5" fill="#9DA1BD">Cluster 2 · /mcp (local) · /mcp/remote (→ C1)</text>
 
         <!-- MCP Server cluster2 -->
         <rect x="526" y="170" width="148" height="40" rx="6"
@@ -483,9 +483,119 @@
   </div>
 
   <!-- ═══════════════════════════════════════════════════════ -->
-  <!-- SLIDE 3 — THE REGISTRY                                 -->
+  <!-- SLIDE 3 — AUTH FLOW                                    -->
   <!-- ═══════════════════════════════════════════════════════ -->
   <div class="slide" id="slide-3">
+    <div class="topbar">
+      <span class="wordmark">Solo.io</span>
+      <span class="topbar-tag">AUTHENTICATION</span>
+    </div>
+    <div class="slide-body">
+      <div class="overline">Security Model</div>
+      <h2 class="section-title">Every call is authenticated. <span>Every identity is verified.</span></h2>
+      <p class="section-sub">Two complementary auth flows — user/agent identity via OIDC, MCP call authorization enforced at the gateway before any tool is reached.</p>
+
+      <div class="two-col" style="margin-top:1rem;gap:2.5rem;">
+
+        <!-- Left: User/Agent Auth -->
+        <div style="display:flex;flex-direction:column;gap:0.75rem;">
+          <div style="font-family:'DM Mono',monospace;font-size:0.7rem;letter-spacing:0.1em;color:var(--purple-l);text-transform:uppercase;margin-bottom:0.25rem;">① Agent Authentication (OIDC)</div>
+          <svg viewBox="0 0 360 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-height:220px;">
+            <defs>
+              <marker id="a1" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+                <path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#8023C3" stroke-width="1.2"/>
+              </marker>
+              <marker id="a2" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+                <path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#1FEEB3" stroke-width="1.2"/>
+              </marker>
+              <marker id="a3" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+                <path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#20B7F3" stroke-width="1.2"/>
+              </marker>
+            </defs>
+            <!-- Agent box -->
+            <rect x="10" y="10" width="90" height="44" rx="6" fill="rgba(128,35,195,0.15)" stroke="#8023C3" stroke-width="1.5"/>
+            <text x="55" y="30" text-anchor="middle" font-family="Figtree" font-weight="600" font-size="10" fill="white">AI Agent</text>
+            <text x="55" y="45" text-anchor="middle" font-family="DM Mono" font-size="7.5" fill="#CC85FF">LLM / MCP client</text>
+            <!-- Dex OIDC box -->
+            <rect x="130" y="10" width="100" height="44" rx="6" fill="rgba(32,183,243,0.1)" stroke="rgba(32,183,243,0.5)" stroke-width="1.2"/>
+            <text x="180" y="30" text-anchor="middle" font-family="Figtree" font-weight="600" font-size="10" fill="white">Dex OIDC</text>
+            <text x="180" y="45" text-anchor="middle" font-family="DM Mono" font-size="7.5" fill="#20B7F3">POST /dex/token</text>
+            <!-- Arrow agent→dex -->
+            <line x1="100" y1="32" x2="130" y2="32" stroke="#8023C3" stroke-width="1.4" marker-end="url(#a1)"/>
+            <rect x="100" y="22" width="32" height="12" rx="3" fill="#151927"/>
+            <text x="116" y="31" text-anchor="middle" font-family="DM Mono" font-size="6.5" fill="#9DA1BD">creds</text>
+            <!-- Arrow dex→agent (JWT) -->
+            <path d="M130,48 Q115,62 100,56" stroke="#1FEEB3" stroke-width="1.4" fill="none" marker-end="url(#a2)"/>
+            <rect x="100" y="57" width="34" height="12" rx="3" fill="#151927"/>
+            <text x="117" y="66" text-anchor="middle" font-family="DM Mono" font-size="6.5" fill="#1FEEB3">JWT</text>
+            <!-- AGW box -->
+            <rect x="10" y="100" width="110" height="50" rx="6" fill="rgba(128,35,195,0.18)" stroke="#8023C3" stroke-width="1.5"/>
+            <text x="65" y="121" text-anchor="middle" font-family="Figtree" font-weight="600" font-size="10" fill="white">AgentGateway</text>
+            <text x="65" y="135" text-anchor="middle" font-family="DM Mono" font-size="7.5" fill="#CC85FF">ExtAuth · JWT validate</text>
+            <text x="65" y="147" text-anchor="middle" font-family="DM Mono" font-size="7" fill="rgba(128,35,195,0.6)">rate limit · route</text>
+            <!-- Agent → AGW with JWT -->
+            <line x1="55" y1="54" x2="55" y2="100" stroke="#8023C3" stroke-width="1.4" marker-end="url(#a1)"/>
+            <rect x="27" y="69" width="80" height="14" rx="3" fill="#151927"/>
+            <text x="67" y="79" text-anchor="middle" font-family="DM Mono" font-size="7" fill="#CC85FF">Bearer &lt;JWT&gt;  POST /mcp</text>
+            <!-- MCP Server box -->
+            <rect x="10" y="195" width="110" height="40" rx="6" fill="#1E2035" stroke="rgba(92,97,120,0.4)" stroke-width="1.2"/>
+            <text x="65" y="212" text-anchor="middle" font-family="DM Sans" font-size="9.5" fill="#B5B8CD">MCP Server</text>
+            <text x="65" y="227" text-anchor="middle" font-family="DM Mono" font-size="7.5" fill="#5C6178">tools/list · tools/call</text>
+            <!-- AGW → MCP -->
+            <line x1="65" y1="150" x2="65" y2="195" stroke="#20B7F3" stroke-width="1.4" marker-end="url(#a3)"/>
+            <rect x="25" y="163" width="80" height="14" rx="3" fill="#151927"/>
+            <text x="65" y="173" text-anchor="middle" font-family="DM Mono" font-size="7" fill="#20B7F3">authorized · forwarded</text>
+            <!-- Validation note -->
+            <rect x="135" y="100" width="215" height="90" rx="6" fill="rgba(128,35,195,0.06)" stroke="rgba(128,35,195,0.2)" stroke-width="1"/>
+            <text x="243" y="118" text-anchor="middle" font-family="DM Mono" font-size="8" fill="#CC85FF">ExtAuth validates:</text>
+            <text x="150" y="136" font-family="DM Mono" font-size="7.5" fill="#9DA1BD">✓  JWT signature (RS256)</text>
+            <text x="150" y="152" font-family="DM Mono" font-size="7.5" fill="#9DA1BD">✓  Token expiry (exp claim)</text>
+            <text x="150" y="168" font-family="DM Mono" font-size="7.5" fill="#9DA1BD">✓  Issuer matches Dex config</text>
+            <text x="150" y="184" font-family="DM Mono" font-size="7.5" fill="#5C6178">✗  No token → HTTP 401</text>
+          </svg>
+        </div>
+
+        <!-- Right: MCP Auth / session flow -->
+        <div style="display:flex;flex-direction:column;gap:0.75rem;">
+          <div style="font-family:'DM Mono',monospace;font-size:0.7rem;letter-spacing:0.1em;color:var(--blue);text-transform:uppercase;margin-bottom:0.25rem;">② MCP Session Authorization</div>
+          <div class="card blue" style="padding:1rem 1.1rem;">
+            <span class="mono-tag blue">POST /mcp → initialize</span>
+            <div style="font-family:'DM Mono',monospace;font-size:0.75rem;color:#9DA1BD;line-height:2;margin-top:0.5rem;">
+              <div><span style="color:#20B7F3;">Authorization:</span> Bearer &lt;JWT&gt;</div>
+              <div><span style="color:#20B7F3;">Accept:</span> application/json, text/event-stream</div>
+              <div style="color:#5C6178;font-size:0.68rem;margin-top:0.25rem;">↳ returns Mcp-Session-Id header</div>
+            </div>
+          </div>
+          <div class="card blue" style="padding:1rem 1.1rem;">
+            <span class="mono-tag blue">POST /mcp → tools/list</span>
+            <div style="font-family:'DM Mono',monospace;font-size:0.75rem;color:#9DA1BD;line-height:2;margin-top:0.5rem;">
+              <div><span style="color:#20B7F3;">Mcp-Session-Id:</span> &lt;session&gt;</div>
+              <div><span style="color:#20B7F3;">Authorization:</span> Bearer &lt;JWT&gt;</div>
+              <div style="color:#5C6178;font-size:0.68rem;margin-top:0.25rem;">↳ returns available tool schemas</div>
+            </div>
+          </div>
+          <div class="card blue" style="padding:1rem 1.1rem;">
+            <span class="mono-tag blue">POST /mcp → tools/call</span>
+            <div style="font-family:'DM Mono',monospace;font-size:0.75rem;color:#9DA1BD;line-height:2;margin-top:0.5rem;">
+              <div><span style="color:#20B7F3;">method:</span> tools/call</div>
+              <div><span style="color:#20B7F3;">params.name:</span> echo</div>
+              <div style="color:#1FEEB3;font-size:0.68rem;margin-top:0.25rem;">↳ tool result returned via SSE</div>
+            </div>
+          </div>
+          <div style="font-size:0.78rem;color:var(--text-muted);font-family:'DM Mono',monospace;padding:0.5rem 0.25rem;line-height:1.7;">
+            JWT is validated on <em style="color:var(--text-sub);">every</em> request — not just session init.<br>
+            Expired token → 401 at the gateway. MCP server never sees it.
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- SLIDE 4 — THE REGISTRY (was 3)                         -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div class="slide" id="slide-4-registry">
     <div class="topbar">
       <span class="wordmark">Solo.io</span>
       <span class="topbar-tag">AGENTREGISTRY</span>
@@ -526,9 +636,9 @@
   </div>
 
   <!-- ═══════════════════════════════════════════════════════ -->
-  <!-- SLIDE 4 — THE GATEWAY                                  -->
+  <!-- SLIDE 5 — THE GATEWAY (was 4)                          -->
   <!-- ═══════════════════════════════════════════════════════ -->
-  <div class="slide" id="slide-4">
+  <div class="slide" id="slide-5-gateway">
     <div class="topbar">
       <span class="wordmark">Solo.io</span>
       <span class="topbar-tag">AGENTGATEWAY</span>
@@ -566,7 +676,7 @@
         <div class="card">
           <span class="mono-tag">GOVERNANCE</span>
           <h4>Enterprise control plane UI</h4>
-          <p>Web UI at <code style="font-family:DM Mono,monospace;font-size:0.8em;color:#CC85FF">localhost:9978</code> — shows configured routes, auth policies, live request logs, and endpoint details. No CLI required for day-2 operations.</p>
+          <p>AgentRegistry Enterprise UI at <code style="font-family:DM Mono,monospace;font-size:0.8em;color:#CC85FF">localhost:8080</code> — catalog, traffic logs, auth outcomes, deployed agents. Gloo Mesh UI at <code style="font-family:DM Mono,monospace;font-size:0.8em;color:#CC85FF">localhost:8090</code> — cross-cluster topology and data plane health.</p>
         </div>
         <div class="card blue">
           <span class="mono-tag blue">AMBIENT MESH</span>
@@ -578,9 +688,9 @@
   </div>
 
   <!-- ═══════════════════════════════════════════════════════ -->
-  <!-- SLIDE 5 — FEDERATION                                   -->
+  <!-- SLIDE 6 — FEDERATION (was 5)                           -->
   <!-- ═══════════════════════════════════════════════════════ -->
-  <div class="slide" id="slide-5">
+  <div class="slide" id="slide-6-federation">
     <div class="topbar">
       <span class="wordmark">Solo.io</span>
       <span class="topbar-tag">CROSS-CLUSTER FEDERATION</span>
@@ -600,23 +710,31 @@
             <li><strong>Consistent policy</strong> — auth, rate limiting, and observability policies defined on the hub apply to all routes including cross-cluster ones</li>
           </ul>
         </div>
-        <div class="two-col-right" style="gap:1rem;">
-          <div class="card blue" style="padding:1.25rem;">
-            <span class="mono-tag blue">DEMO FLOW</span>
-            <h4 style="margin-bottom:0.6rem;">Agent calls /mcp/remote</h4>
-            <div style="font-family:'DM Mono',monospace;font-size:0.75rem;color:#B5B8CD;line-height:2;">
-              <div style="color:#20B7F3;">POST /mcp/remote</div>
-              <div style="color:#5C6178;">↓  AGW Hub validates JWT</div>
-              <div style="color:#5C6178;">↓  HTTPRoute → AGW Spoke backend</div>
-              <div style="color:#20B7F3;">↓  HBONE mTLS → cluster2</div>
-              <div style="color:#1FEEB3;">↓  mcp-server-everything tools/list</div>
-              <div style="color:#9DA1BD;">↓  200 OK · same tools, different cluster</div>
+        <div class="two-col-right" style="gap:0.75rem;">
+          <div class="card blue" style="padding:1rem 1.1rem;">
+            <span class="mono-tag blue">CLUSTER 1 → CLUSTER 2</span>
+            <h4 style="margin-bottom:0.4rem;">Agent on C1 reaches C2 tools</h4>
+            <div style="font-family:'DM Mono',monospace;font-size:0.72rem;color:#B5B8CD;line-height:1.9;">
+              <div style="color:#20B7F3;">POST http://&lt;C1-AGW&gt;/mcp/remote</div>
+              <div style="color:#5C6178;">↓  C1 AGW validates JWT · routes</div>
+              <div style="color:#20B7F3;">↓  HBONE mTLS → Cluster 2</div>
+              <div style="color:#1FEEB3;">↓  C2 mcp-server-everything responds</div>
             </div>
           </div>
-          <div class="card" style="padding:1rem;">
+          <div class="card orange" style="padding:1rem 1.1rem;">
+            <span class="mono-tag" style="color:var(--orange);background:rgba(255,167,133,0.12);">CLUSTER 2 → CLUSTER 1</span>
+            <h4 style="margin-bottom:0.4rem;">Agent on C2 reaches C1 tools</h4>
+            <div style="font-family:'DM Mono',monospace;font-size:0.72rem;color:#B5B8CD;line-height:1.9;">
+              <div style="color:#FFA785;">POST http://&lt;C2-AGW&gt;/mcp/remote</div>
+              <div style="color:#5C6178;">↓  C2 AGW routes to C1 LB</div>
+              <div style="color:#FFA785;">↓  HBONE mTLS → Cluster 1</div>
+              <div style="color:#1FEEB3;">↓  C1 mcp-server-everything responds</div>
+            </div>
+          </div>
+          <div class="card" style="padding:0.9rem;">
             <span class="mono-tag">KEY MESSAGE</span>
-            <p style="font-size:0.88rem;color:#B5B8CD;line-height:1.6;margin-top:0.4rem;">
-              New EKS clusters — or future on-prem OpenShift clusters — can be added as spokes without changing any agent code. The gateway handles all cross-cluster routing. Agents are location-unaware.
+            <p style="font-size:0.82rem;color:#B5B8CD;line-height:1.55;margin-top:0.3rem;">
+              Federation is bidirectional and symmetric. Agents on either cluster reach tools on any cluster using the same path convention. Adding a third cluster is one new HTTPRoute.
             </p>
           </div>
         </div>
@@ -630,7 +748,7 @@
 <nav class="slide-nav" id="slideNav">
   <button id="prevBtn" onclick="changeSlide(-1)" disabled>&#8592;</button>
   <div style="display:flex;gap:0.5rem;align-items:center;" id="dotContainer"></div>
-  <span class="slide-counter" id="counter">1 / 5</span>
+  <span class="slide-counter" id="counter">1 / 6</span>
   <button id="nextBtn" onclick="changeSlide(1)">&#8594;</button>
 </nav>
 
