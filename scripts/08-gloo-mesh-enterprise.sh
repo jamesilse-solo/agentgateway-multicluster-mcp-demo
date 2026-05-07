@@ -130,7 +130,7 @@ licensing:
   glooMeshLicenseKey: "${GLOO_MESH_LICENSE_KEY}"
 
 common:
-  cluster: cluster1
+  cluster: "${C1}"
 
 glooMgmtServer:
   enabled: true
@@ -299,7 +299,7 @@ helm upgrade --install gloo-platform-agent gloo-platform/gloo-platform \
   ${AGENT_REGISTRY_FLAGS_C2} \
   -f - <<EOF
 common:
-  cluster: cluster2
+  cluster: "${C2}"
 
 glooAgent:
   enabled: true
