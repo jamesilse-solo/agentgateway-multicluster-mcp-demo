@@ -95,20 +95,25 @@ echo ""
 TOKEN=""
 if [[ "${NO_AUTH}" == "false" ]]; then
   step "Step 1 — Acquire JWT from Dex (password grant)"
-  info "  Port-forwarding Dex locally on :5556..."
-  pkill -f "port-forward.*dex.*5556" 2>/dev/null || true
-  sleep 1
-  ${KC} -n "${DEX_NAMESPACE}" port-forward svc/dex 5556:5556 &>/dev/null &
-  PF_DEX=$!
-  trap 'kill "${PF_DEX}" 2>/dev/null || true' EXIT
 
-  for i in $(seq 1 12); do
-    if curl -s --max-time 2 "http://localhost:5556/dex/.well-known/openid-configuration" &>/dev/null; then
-      break
-    fi
-    [[ ${i} -eq 12 ]] && { fail "Dex not reachable on :5556 after 12s"; exit 1; }
-    sleep 1
-  done
+  # Reuse an existing Dex port-forward if one is running (e.g. from
+  # ./demo/portforward.sh). Otherwise start a temporary one for this run.
+  PF_DEX=""
+  if curl -s --max-time 2 "http://localhost:5556/dex/.well-known/openid-configuration" &>/dev/null; then
+    info "  Dex already reachable on :5556 — reusing existing port-forward."
+  else
+    info "  Port-forwarding Dex locally on :5556..."
+    ${KC} -n "${DEX_NAMESPACE}" port-forward svc/dex 5556:5556 &>/dev/null &
+    PF_DEX=$!
+    trap 'kill "${PF_DEX}" 2>/dev/null || true' EXIT
+    for i in $(seq 1 12); do
+      if curl -s --max-time 2 "http://localhost:5556/dex/.well-known/openid-configuration" &>/dev/null; then
+        break
+      fi
+      [[ ${i} -eq 12 ]] && { fail "Dex not reachable on :5556 after 12s"; exit 1; }
+      sleep 1
+    done
+  fi
 
   cmd "POST http://localhost:5556/dex/token  grant_type=password  user=demo@example.com"
   TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \

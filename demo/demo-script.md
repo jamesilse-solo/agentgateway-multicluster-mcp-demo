@@ -14,7 +14,7 @@ Run these before the call starts. Everything should be green before screen-share
 ```bash
 # 1. Start all port-forwards (leave this running in a dedicated terminal)
 KUBE_CONTEXT=cluster1 ./demo/portforward.sh
-# → All four sections should show ✓
+# → All five sections should show ✓ (AgentRegistry / AGW UI / Gloo Mesh / Dex / MCP LBs)
 
 # 2. Verify AgentRegistry UI loads and shows 3 servers
 open http://localhost:8080

@@ -17,7 +17,11 @@ set -euo pipefail
 #      Cross-cluster federation, ambient mesh topology,
 #      east-west gateway health, cluster registration.
 #
-#   4. AgentGateway MCP endpoints      → prints external LB addresses
+#   4. Dex OIDC IdP                    → http://localhost:5556
+#      Issues JWTs for the demo (password grant + browser-flow).
+#      Demo creds: demo@example.com / demo-pass / agw-client / agw-client-secret.
+#
+#   5. AgentGateway MCP endpoints      → prints external LB addresses
 #
 # Usage:
 #   ./demo/portforward.sh
@@ -28,6 +32,7 @@ KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1}"
 AGW_NAMESPACE="${AGW_NAMESPACE:-agentgateway-system}"
 AREG_NAMESPACE="${AREG_NAMESPACE:-agentregistry}"
 GM_NAMESPACE="${GM_NAMESPACE:-gloo-mesh}"
+DEX_NAMESPACE="${DEX_NAMESPACE:-dex}"
 AREG_SVC="${AREG_SVC:-agentregistry-agentregistry-enterprise}"
 AGW_MGMT_SVC="${AGW_MGMT_SVC:-solo-enterprise-ui}"
 KC="kubectl --context ${KUBE_CONTEXT}"
@@ -52,9 +57,10 @@ echo ""
 ###############################################################################
 # 0. Clean up any existing port-forwards on our ports
 ###############################################################################
-pkill -f "port-forward.*agentregistry.*8080"   2>/dev/null || true
+pkill -f "port-forward.*agentregistry.*8080"      2>/dev/null || true
 pkill -f "port-forward.*solo-enterprise-ui.*4000" 2>/dev/null || true
-pkill -f "port-forward.*gloo-mesh-ui.*8090"    2>/dev/null || true
+pkill -f "port-forward.*gloo-mesh-ui.*8090"       2>/dev/null || true
+pkill -f "port-forward.*dex.*5556"                2>/dev/null || true
 sleep 1
 
 ###############################################################################
@@ -118,9 +124,29 @@ done
 [[ "${GME_OK}" == "false" ]] && warn "Gloo Mesh UI not responding — check: ${KC} -n ${GM_NAMESPACE} get pod -l app=gloo-mesh-ui"
 
 ###############################################################################
-# 4. AgentGateway MCP endpoints — external LBs (no port-forward needed)
+# 4. Dex OIDC IdP  →  5556:5556
 ###############################################################################
-hdr "4. AgentGateway MCP Endpoints"
+hdr "4. Dex OIDC IdP"
+
+${KC} -n "${DEX_NAMESPACE}" port-forward svc/dex 5556:5556 &>/dev/null &
+PF_DEX=$!
+echo -e "  Started (PID ${PF_DEX}), waiting for readiness..."
+
+DEX_OK=false
+for i in $(seq 1 15); do
+  if curl -s --max-time 2 "http://localhost:5556/dex/.well-known/openid-configuration" &>/dev/null; then
+    ok "Dex IdP ready — http://localhost:5556/dex"
+    DEX_OK=true
+    break
+  fi
+  sleep 1
+done
+[[ "${DEX_OK}" == "false" ]] && warn "Dex not responding — check: ${KC} -n ${DEX_NAMESPACE} get pod -l app=dex"
+
+###############################################################################
+# 5. AgentGateway MCP endpoints — external LBs (no port-forward needed)
+###############################################################################
+hdr "5. AgentGateway MCP Endpoints"
 
 AGW_LB=$(${KC} -n "${AGW_NAMESPACE}" get svc agentgateway-hub \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
@@ -146,7 +172,7 @@ else
 fi
 
 ###############################################################################
-# 5. Summary
+# 6. Summary
 ###############################################################################
 echo ""
 echo -e "${BOLD}${CYAN}╔═══════════════════════════════════════════════════════════════════╗${RESET}"
@@ -155,6 +181,7 @@ echo -e "${BOLD}${CYAN}╠══════════════════
 echo -e "${BOLD}${CYAN}║${RESET}  AgentRegistry UI         →  ${GREEN}http://localhost:8080${RESET}             ${BOLD}${CYAN}║${RESET}"
 echo -e "${BOLD}${CYAN}║${RESET}  AgentGateway Enterprise  →  ${GREEN}http://localhost:4000${RESET}             ${BOLD}${CYAN}║${RESET}"
 echo -e "${BOLD}${CYAN}║${RESET}  Gloo Mesh UI             →  ${GREEN}http://localhost:8090${RESET}             ${BOLD}${CYAN}║${RESET}"
+echo -e "${BOLD}${CYAN}║${RESET}  Dex IdP (token endpoint) →  ${GREEN}http://localhost:5556/dex${RESET}         ${BOLD}${CYAN}║${RESET}"
 if [[ -n "${AGW_LB}" ]]; then
 echo -e "${BOLD}${CYAN}║${RESET}  Cluster 1 /mcp           →  ${GREEN}http://${AGW_LB}/mcp${RESET}"
 fi
@@ -166,5 +193,5 @@ echo ""
 echo -e "  ${YELLOW}Press Ctrl-C to stop all port-forwards.${RESET}"
 echo ""
 
-trap 'echo ""; echo "Stopping port-forwards..."; kill "${PF_AREG}" "${PF_AGW_UI}" "${PF_GME}" 2>/dev/null || true' EXIT INT TERM
+trap 'echo ""; echo "Stopping port-forwards..."; kill "${PF_AREG}" "${PF_AGW_UI}" "${PF_GME}" "${PF_DEX}" 2>/dev/null || true' EXIT INT TERM
 wait
