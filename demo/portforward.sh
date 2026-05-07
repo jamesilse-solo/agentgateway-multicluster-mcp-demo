@@ -21,7 +21,7 @@ set -euo pipefail
 #
 # Usage:
 #   ./demo/portforward.sh
-#   KUBE_CONTEXT=cluster1-singtel ./demo/portforward.sh
+#   KUBE_CONTEXT=cluster1 ./demo/portforward.sh
 ###############################################################################
 
 KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1}"

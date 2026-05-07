@@ -1027,7 +1027,7 @@ Registers three MCP servers into the AgentRegistry Enterprise catalog so they ap
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `KUBE_CONTEXT` | No | `cluster1-singtel` | Hub cluster kubectl context |
+| `KUBE_CONTEXT` | No | `cluster1` | Hub cluster kubectl context |
 | `AGW_NAMESPACE` | No | `agentgateway-system` | AGW namespace |
 | `AREG_NAMESPACE` | No | `agentregistry` | AgentRegistry namespace |
 | `DEX_USER` | No | `demo@example.com` | Dex user for token acquisition |
@@ -1072,7 +1072,7 @@ TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
   -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
   | python3 -c "import sys,json; t=json.load(sys.stdin); print(t.get('access_token',''))")
 
-AGW_LB=$(kubectl --context cluster1-singtel -n agentgateway-system \
+AGW_LB=$(kubectl --context cluster1 -n agentgateway-system \
   get svc agentgateway-hub \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 
@@ -1133,9 +1133,9 @@ The AREG UI uses OIDC (Dex) for login. The browser gets redirected to the intern
 sudo sh -c 'echo "127.0.0.1 dex.dex.svc.cluster.local" >> /etc/hosts'
 
 # 2. Port-forward AgentRegistry UI and Dex
-kubectl --context cluster1-singtel -n agentregistry \
+kubectl --context cluster1 -n agentregistry \
   port-forward svc/agentregistry-agentregistry-enterprise 8080:8080 &
-kubectl --context cluster1-singtel -n dex \
+kubectl --context cluster1 -n dex \
   port-forward svc/dex 5556:5556 &
 
 # 3. Open http://localhost:8080 — log in with demo@example.com / demo-pass

@@ -13,7 +13,7 @@ Run these before the call starts. Everything should be green before screen-share
 
 ```bash
 # 1. Start all port-forwards (leave this running in a dedicated terminal)
-KUBE_CONTEXT=cluster1-singtel ./demo/portforward.sh
+KUBE_CONTEXT=cluster1 ./demo/portforward.sh
 # → All four sections should show ✓
 
 # 2. Verify AgentRegistry UI loads and shows 3 servers
@@ -29,8 +29,8 @@ open http://localhost:8090
 # → Should show cluster topology with cluster1 and cluster2 registered.
 
 # 5. Confirm both AGW LBs resolve
-kubectl --context cluster1-singtel -n agentgateway-system get svc agentgateway-hub
-kubectl --context cluster2-singtel -n agentgateway-system get svc agentgateway-spoke
+kubectl --context cluster1 -n agentgateway-system get svc agentgateway-hub
+kubectl --context cluster2 -n agentgateway-system get svc agentgateway-spoke
 # → Copy both EXTERNAL-IP / hostnames for reference
 
 # 6. Verify cluster1 → cluster2 MCP works
@@ -38,7 +38,7 @@ kubectl --context cluster2-singtel -n agentgateway-system get svc agentgateway-s
 # → Should complete with tool list and echo response from cluster2
 
 # 7. Verify cluster2 → cluster1 MCP works
-C2_LB=$(kubectl --context cluster2-singtel -n agentgateway-system \
+C2_LB=$(kubectl --context cluster2 -n agentgateway-system \
   get svc agentgateway-spoke -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 AGW_LB="${C2_LB}" ./demo/send-traffic.sh --remote
 # → Tool list and echo response from cluster1 via cluster2's gateway
@@ -124,7 +124,7 @@ curl -s -X POST http://localhost:8080/v0/servers \
 **Run send-traffic.sh**
 
 ```bash
-KUBE_CONTEXT=cluster1-singtel ./demo/send-traffic.sh
+KUBE_CONTEXT=cluster1 ./demo/send-traffic.sh
 ```
 
 > "Step 1: JWT from Dex. In production this is a service account credential or OAuth client credentials flow."
@@ -189,7 +189,7 @@ Navigate to graph/topology if available:
 **Direction 1: Cluster 1 → Cluster 2**
 
 ```bash
-KUBE_CONTEXT=cluster1-singtel ./demo/send-traffic.sh --remote
+KUBE_CONTEXT=cluster1 ./demo/send-traffic.sh --remote
 ```
 
 > "Same gateway LB on cluster 1 — but the `/mcp/remote` path routes the call to cluster 2. Same JWT, same session flow. Watch — the tools come back from the cluster 2 MCP server."
@@ -201,7 +201,7 @@ After it succeeds:
 **Direction 2: Cluster 2 → Cluster 1**
 
 ```bash
-C2_LB=$(kubectl --context cluster2-singtel -n agentgateway-system \
+C2_LB=$(kubectl --context cluster2 -n agentgateway-system \
   get svc agentgateway-spoke -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 AGW_LB="${C2_LB}" ./demo/send-traffic.sh --remote
 ```
@@ -252,29 +252,29 @@ Navigate to Gloo Mesh UI, show the traffic:
 
 **AgentRegistry UI shows no servers:**
 ```bash
-KUBE_CONTEXT=cluster1-singtel ./scripts/07-register-mcp-servers.sh
+KUBE_CONTEXT=cluster1 ./scripts/07-register-mcp-servers.sh
 ```
 
 **AgentGateway Enterprise UI not loading on :4000:**
 ```bash
-kubectl --context cluster1-singtel -n agentgateway-system get pod -l app=solo-enterprise-ui
-kubectl --context cluster1-singtel -n agentgateway-system port-forward svc/solo-enterprise-ui 4000:80
+kubectl --context cluster1 -n agentgateway-system get pod -l app=solo-enterprise-ui
+kubectl --context cluster1 -n agentgateway-system port-forward svc/solo-enterprise-ui 4000:80
 ```
 
 **Gloo Mesh UI not loading on :8090:**
 ```bash
-kubectl --context cluster1-singtel -n gloo-mesh get pod -l app=gloo-mesh-ui
-kubectl --context cluster1-singtel -n gloo-mesh port-forward svc/gloo-mesh-ui 8090:8090
+kubectl --context cluster1 -n gloo-mesh get pod -l app=gloo-mesh-ui
+kubectl --context cluster1 -n gloo-mesh port-forward svc/gloo-mesh-ui 8090:8090
 ```
 
 **send-traffic.sh fails at JWT step:**
 ```bash
-kubectl --context cluster1-singtel -n dex get pods
-kubectl --context cluster1-singtel -n dex get cm dex-config -o yaml | grep -A5 agw-client
+kubectl --context cluster1 -n dex get pods
+kubectl --context cluster1 -n dex get cm dex-config -o yaml | grep -A5 agw-client
 ```
 
 **Cluster2 → Cluster1 reverse route not working:**
 ```bash
-kubectl --context cluster2-singtel -n agentgateway-system get httproute
-kubectl --context cluster2-singtel -n agentgateway-system get agentgatewaybackend mcp-backends-cluster1
+kubectl --context cluster2 -n agentgateway-system get httproute
+kubectl --context cluster2 -n agentgateway-system get agentgatewaybackend mcp-backends-cluster1
 ```

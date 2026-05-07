@@ -13,7 +13,7 @@ variable "account_id" {
 variable "cluster_name_prefix" {
   description = "Prefix for cluster names"
   type        = string
-  default     = "singtel-jamesilse"
+  default     = "agentgateway-poc"
 }
 
 variable "node_instance_type" {

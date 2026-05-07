@@ -23,7 +23,7 @@ set -euo pipefail
 #
 # Usage:
 #   ./scripts/07-register-mcp-servers.sh
-#   KUBE_CONTEXT=cluster1-singtel ./scripts/07-register-mcp-servers.sh
+#   KUBE_CONTEXT=cluster1 ./scripts/07-register-mcp-servers.sh
 ###############################################################################
 
 KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1}"
