@@ -880,6 +880,64 @@ kubectl --context cluster1 -n agentregistry port-forward svc/agentregistry-agent
 
 ---
 
+## Phase 4a: AGW Enterprise Management UI (`scripts/04a-agw-management-ui.sh`)
+
+Installs the **AgentGateway Enterprise management UI** (`solo-enterprise-ui`, served on port 4000 via port-forward), the OTel collector, and ClickHouse for trace + metric storage. Configures the AGW data plane to emit traces and per-agent metrics so the UI populates with real traffic data.
+
+This is the control-plane governance view referenced in `POC-Success-Criteria-v2/Phase7-Observability/`. Without it, the AGW data plane runs but emits no telemetry — the UI shows "No data available".
+
+### Parameters
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `KUBE_CONTEXT` | No | `cluster1` | kubectl context |
+| `AGW_NAMESPACE` | No | `agentgateway-system` | AGW namespace |
+| `AGW_MGMT_VERSION` | No | `0.3.12` | `management` chart version |
+| `AGW_CHART_VERSION` | No | `v2.3.0-rc.3` | `enterprise-agentgateway` chart version |
+
+### What it does
+
+1. `helm install agw-management` from `oci://us-docker.pkg.dev/solo-public/solo-enterprise-helm/charts/management` — deploys `solo-enterprise-ui`, `solo-enterprise-telemetry-collector`, and `agw-management-clickhouse`
+2. Patches `solo-enterprise-ui` deployment CPU requests to 50m per container so it fits on small demo nodes
+3. Applies `EnterpriseAgentgatewayParameters/agentgateway-config` with:
+   - `tracing.otlpEndpoint: solo-enterprise-telemetry-collector...:4317`
+   - `metrics.fields.add.user_id` for per-agent breakdown
+   - `logging.fields.add.jwt.all` for identity in logs
+4. `helm upgrade enterprise-agentgateway --reuse-values --set gatewayClassParametersRefs.enterprise-agentgateway.{group,kind,name,namespace}=...` so the GatewayClass picks up the params resource
+5. Restarts the AGW controller (`enterprise-agentgateway`) so the GatewayClass `parametersRef` populates
+6. Restarts the AGW data plane (`agentgateway-hub`) so the rendered ConfigMap includes the new tracing block
+7. Restarts `solo-enterprise-ui` and the telemetry collector once ClickHouse is up so the schema migration runs cleanly and queued exports flush
+
+### Access the UI
+
+```bash
+kubectl --context cluster1 -n agentgateway-system port-forward svc/solo-enterprise-ui 4000:80
+# Open: http://localhost:4000
+```
+
+### Verify telemetry pipeline
+
+```bash
+# After sending some traffic (./demo/send-traffic.sh):
+kubectl --context cluster1 -n agentgateway-system logs solo-enterprise-telemetry-collector-0 --tail=20 | grep -iE "error|fail"
+# Empty = collector exporting to ClickHouse cleanly. Errors = check the
+# scripts/04a-agw-management-ui.sh restart steps ran.
+
+# Confirm parametersRef on GatewayClass
+kubectl --context cluster1 get gatewayclass enterprise-agentgateway -o jsonpath='{.spec.parametersRef.name}'
+# Expected: agentgateway-config
+```
+
+### Run
+
+```bash
+./scripts/04a-agw-management-ui.sh
+```
+
+> **CPU note**: The chart's defaults request ~700m CPU for `solo-enterprise-ui` alone (4 containers × 100-250m). On demo-sized nodes (`t3.medium`, single-node), this won't schedule. The patched values (50m × 4 = 200m) are sufficient for demo traffic; raise for production workloads.
+
+---
+
 ## Phase 5: Authentication (`scripts/05-extauth.sh`)
 
 Configures **Flow 1 (User Auth)** on the AgentGateway Hub: the ExtAuth sidecar + Redis validate Dex OIDC sessions. Unauthenticated browser requests receive a 302 redirect to the Dex login page; authenticated requests (Bearer token or session cookie) pass through to the MCP backend.
