@@ -94,6 +94,73 @@ EOF
 # east-west gateway (mcp-server-everything.agentgateway-system.mesh.internal).
 
 ###############################################################################
+# 3b. Reverse direction: cluster2 → cluster1
+#     An agent hitting cluster2's spoke gateway at /mcp/remote should be
+#     routed to cluster1's mcp-server. This proves the federation is symmetric
+#     (true distributed mesh, not hub-and-spoke). Validates POC test FED-02.
+#
+#     Implementation: cluster2 uses a static host pointing at cluster1's
+#     external LoadBalancer hostname. This is simpler than configuring a second
+#     mesh.internal entry and works regardless of mesh peering state.
+###############################################################################
+log "Resolving cluster1's AgentGateway external LB for the reverse-direction route"
+
+C1_LB=""
+for i in $(seq 1 30); do
+  C1_LB=$(${KC1} -n "${AGW_NAMESPACE}" get svc agentgateway-hub \
+    -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+  [[ -n "${C1_LB}" ]] && break
+  sleep 5
+done
+
+if [[ -z "${C1_LB}" ]]; then
+  echo "  ⚠  Could not resolve cluster1 LB. Skipping reverse-direction setup."
+else
+  echo "  Cluster1 LB: ${C1_LB}"
+
+  log "Creating AgentgatewayBackend mcp-backends-cluster1 on cluster2 (points at C1 LB)"
+  ${KC2} apply -n "${AGW_NAMESPACE}" -f - <<EOF
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: mcp-backends-cluster1
+  namespace: ${AGW_NAMESPACE}
+spec:
+  mcp:
+    failureMode: FailOpen
+    targets:
+    - name: mcp-server-cluster1
+      static:
+        host: ${C1_LB}
+        port: 80
+EOF
+
+  log "Creating HTTPRoute mcp-route-cluster1 on cluster2 spoke gateway (/mcp/remote)"
+  ${KC2} apply -n "${AGW_NAMESPACE}" -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: mcp-route-cluster1
+  namespace: ${AGW_NAMESPACE}
+spec:
+  parentRefs:
+  - name: agentgateway-spoke
+    namespace: ${AGW_NAMESPACE}
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /mcp/remote
+    backendRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: mcp-backends-cluster1
+      namespace: ${AGW_NAMESPACE}
+      weight: 1
+EOF
+fi
+
+###############################################################################
 # 4. Verify global service entry is created by Istio
 ###############################################################################
 log "Checking for global ServiceEntry (may take 30s to propagate)"
