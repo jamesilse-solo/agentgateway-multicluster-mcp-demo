@@ -42,7 +42,8 @@ log "Generating bcrypt password hash for ${DEX_USER_NAME}"
 if command -v python3 &>/dev/null && python3 -c "import bcrypt" 2>/dev/null; then
   PASSWORD_HASH=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'${DEX_USER_PASSWORD}', bcrypt.gensalt(rounds=10)).decode())")
 elif command -v htpasswd &>/dev/null; then
-  PASSWORD_HASH=$(htpasswd -iBn x <<< "${DEX_USER_PASSWORD}" | cut -d: -f2)
+  # -B = bcrypt, -C 10 = cost 10 (Dex requires cost >= 10; htpasswd -B alone defaults to cost 5)
+  PASSWORD_HASH=$(htpasswd -iBC 10 -n x <<< "${DEX_USER_PASSWORD}" | cut -d: -f2)
 else
   # Pre-computed bcrypt hash for "demo-pass" (cost 10)
   PASSWORD_HASH='$2b$10$SYAvnXXmpfp1.if/JXodKOPG7vCZW7CMvDSzK2LLkbw5G4S5/oIli'

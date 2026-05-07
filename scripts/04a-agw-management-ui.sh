@@ -126,6 +126,16 @@ spec:
   deployment:
     spec:
       replicas: 1
+  # Shared extensions: ExtAuth (JWT validation), rate limiter, and ext-cache
+  # (Redis for session storage). Without ext-cache, OIDC session-cookie flow
+  # fails — Bearer tokens get redirected because the session can't be persisted.
+  sharedExtensions:
+    extauth:
+      enabled: true
+    ratelimiter:
+      enabled: true
+    extCache:
+      enabled: true
   rawConfig:
     config:
       tracing:

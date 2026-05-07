@@ -377,12 +377,9 @@ metadata:
   name: gloo-mesh-ui-backend
   namespace: ${AGW_NS}
 spec:
-  http:
-    targets:
-    - name: gloo-mesh-ui
-      static:
-        host: gloo-mesh-ui.${GM_NS}.svc.cluster.local
-        port: 8090
+  static:
+    host: gloo-mesh-ui.${GM_NS}.svc.cluster.local
+    port: 8090
 EOF
 
 ${KC1} apply -n "${AGW_NS}" -f - <<EOF
