@@ -40,6 +40,7 @@ set -euo pipefail
 : "${GLOO_MESH_LICENSE_KEY:?GLOO_MESH_LICENSE_KEY is required}"
 
 # ─── Config ──────────────────────────────────────────────────────────────────
+# Kubectl contexts (how this script reaches each cluster):
 C1="${CLUSTER1_CONTEXT:-cluster1}"
 C2="${CLUSTER2_CONTEXT:-cluster2}"
 AGW_NS="${AGW_NS:-agentgateway-system}"
@@ -49,6 +50,23 @@ REGISTRY="${REGISTRY:-}"   # Set to override for air-gapped installs, e.g. my-re
 
 KC1="kubectl --context ${C1}"
 KC2="kubectl --context ${C2}"
+
+# Gloo Mesh `common.cluster` MUST equal Istio's CLUSTER_ID for the management
+# UI's service-graph to correlate metrics. Auto-detect from istiod's
+# CLUSTER_ID env var if not explicitly set. Fallback: use the kubectl context
+# name (matches the install-script default of CLUSTER_NAME=KUBE_CONTEXT).
+_detect_istio_cluster_name() {
+  local ctx="$1"
+  kubectl --context "${ctx}" -n istio-system get deploy istiod-main \
+    -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CLUSTER_ID")].value}' 2>/dev/null
+}
+
+C1_NAME="${CLUSTER1_NAME:-$(_detect_istio_cluster_name "${C1}")}"
+C2_NAME="${CLUSTER2_NAME:-$(_detect_istio_cluster_name "${C2}")}"
+[[ -z "${C1_NAME}" ]] && C1_NAME="${C1}"
+[[ -z "${C2_NAME}" ]] && C2_NAME="${C2}"
+echo "  ▸ Cluster1: kubectl context='${C1}', Istio/Gloo Mesh cluster name='${C1_NAME}'"
+echo "  ▸ Cluster2: kubectl context='${C2}', Istio/Gloo Mesh cluster name='${C2_NAME}'"
 
 log()  { echo ""; echo "=== $1 ==="; }
 ok()   { echo "  ✓ $1"; }
@@ -130,7 +148,10 @@ licensing:
   glooMeshLicenseKey: "${GLOO_MESH_LICENSE_KEY}"
 
 common:
-  cluster: "${C1}"
+  # MUST match Istio's CLUSTER_ID — see _detect_istio_cluster_name above.
+  # The mgmt UI's service-graph correlates istio_requests_total
+  # source/destination_cluster labels against KubernetesCluster names.
+  cluster: "${C1_NAME}"
 
 glooMgmtServer:
   enabled: true
@@ -261,8 +282,10 @@ EXTEOF
     -extfile "${RELAY_TMP}/${cluster_name}-ext.cnf" -extensions v3_req &>/dev/null
 }
 
-_gen_agent_cert "${C1}" "${RELAY_TMP}/agent-c1"
-_gen_agent_cert "${C2}" "${RELAY_TMP}/agent-c2"
+# Cert SANs must match common.cluster (which the mgmt-server validates against
+# the relay handshake) — use the Istio cluster name, not the kubectl context.
+_gen_agent_cert "${C1_NAME}" "${RELAY_TMP}/agent-c1"
+_gen_agent_cert "${C2_NAME}" "${RELAY_TMP}/agent-c2"
 
 # Push cluster1's agent client cert (SAN=cluster1) into cluster1
 ${KC1} -n "${GM_NS}" create secret generic relay-client-tls-secret \
@@ -331,7 +354,8 @@ helm upgrade --install gloo-platform-agent gloo-platform/gloo-platform \
   ${AGENT_REGISTRY_FLAGS_C2} \
   -f - <<EOF
 common:
-  cluster: "${C2}"
+  # MUST match Istio's CLUSTER_ID on cluster2.
+  cluster: "${C2_NAME}"
 
 glooAgent:
   enabled: true
@@ -382,7 +406,7 @@ ${KC1} apply -f - <<EOF
 apiVersion: admin.gloo.solo.io/v2
 kind: KubernetesCluster
 metadata:
-  name: ${C1}
+  name: ${C1_NAME}
   namespace: ${GM_NS}
 spec:
   clusterDomain: cluster.local
@@ -390,13 +414,13 @@ spec:
 apiVersion: admin.gloo.solo.io/v2
 kind: KubernetesCluster
 metadata:
-  name: ${C2}
+  name: ${C2_NAME}
   namespace: ${GM_NS}
 spec:
   clusterDomain: cluster.local
 EOF
 
-ok "KubernetesCluster CRs created for ${C1} and ${C2}"
+ok "KubernetesCluster CRs created for ${C1_NAME} and ${C2_NAME}"
 
 ###############################################################################
 # 11. Verify both clusters are registered
