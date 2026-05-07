@@ -162,16 +162,34 @@ glooUi:
 prometheus:
   enabled: true
 
+# telemetryGateway service must be LoadBalancer so cluster2's
+# telemetry-collector can ship metrics across clusters into the management
+# plane's Prometheus. Without an external endpoint, cluster2 workloads do not
+# appear in the Gloo Mesh UI service graph.
 telemetryGateway:
   enabled: true
   service:
-    type: ClusterIP
+    type: LoadBalancer
 
+# DaemonSet (one pod per node) that scrapes ztunnel + workload metrics on
+# cluster1 and forwards to the local telemetryGateway → Prometheus. Required
+# for the Gloo Mesh UI service-graph view to populate cluster1 workloads.
 telemetryCollector:
-  enabled: false   # disabled: t3.large nodes have insufficient CPU for the DaemonSet
+  enabled: true
+
+# Note: glooAnalyzer is enabled but the chart only renders the analyzer (as
+# either a sidecar to gloo-mesh-agent or a standalone deployment) when
+# glooUi.enabled=false. On the management cluster (where glooUi=true) the
+# analyzer would only attach if glooAgent.runAsSidecar=true — collapsing the
+# agent into the mgmt-server pod. We keep agent as a standalone deployment for
+# clearer topology, so cluster1's local analyzer is not deployed; the
+# management plane's insights engine consumes findings from cluster2's
+# analyzer (and any other workload-cluster analyzers).
+glooAnalyzer:
+  enabled: true
 EOF
 
-ok "Management plane + local agent + insights engine installed on cluster1"
+ok "Management plane + local agent + insights engine + telemetry installed on cluster1"
 
 ###############################################################################
 # 5. Expose management server relay as LoadBalancer (for cluster2 agent)
@@ -290,6 +308,20 @@ if [[ -n "${REGISTRY}" ]]; then
     --set telemetryCollector.image.repository=${REGISTRY}/gloo-otel-collector"
 fi
 
+# Resolve cluster1's telemetryGateway LB hostname so cluster2's
+# telemetry-collector can ship metrics to it. The chart requires this to be
+# set explicitly when the collector runs in a workload cluster.
+log "Resolving cluster1 telemetry-gateway LB for cross-cluster metrics"
+TG_LB=""
+for i in $(seq 1 24); do
+  TG_LB=$(${KC1} -n "${GM_NS}" get svc gloo-telemetry-gateway \
+    -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "")
+  [[ -n "${TG_LB}" ]] && break
+  [[ ${i} -eq 24 ]] && fail "Telemetry gateway LB did not get an address after 2 min"
+  sleep 5
+done
+ok "Telemetry gateway LB: ${TG_LB}"
+
 # shellcheck disable=SC2086
 helm upgrade --install gloo-platform-agent gloo-platform/gloo-platform \
   --kube-context "${C2}" \
@@ -317,8 +349,26 @@ prometheus:
 telemetryGateway:
   enabled: false
 
+# DaemonSet that ships cluster2's metrics back to the management plane's
+# telemetryGateway. Cross-cluster, so OTLP endpoint must be the LB hostname
+# of cluster1's telemetryGateway (resolved above). Without this, the chart
+# fails with "endpoint must be set for the otlp exporter when deployed in
+# workload cluster".
 telemetryCollector:
-  enabled: false
+  enabled: true
+  config:
+    exporters:
+      otlp:
+        endpoint: "${TG_LB}:4317"
+        tls:
+          insecure: true
+
+# Per-cluster analyzer: reads Istio config + workloads on this cluster and
+# emits findings consumed by the management plane's insights engine. Runs as
+# a sidecar in the gloo-mesh-agent pod (chart-default behaviour when
+# glooUi.enabled=false).
+glooAnalyzer:
+  enabled: true
 EOF
 
 ok "Agent installed on cluster2"

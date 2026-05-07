@@ -36,7 +36,7 @@ set -euo pipefail
 KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1}"
 AGW_NAMESPACE="${AGW_NAMESPACE:-agentgateway-system}"
 AGW_MGMT_VERSION="${AGW_MGMT_VERSION:-0.3.12}"
-AGW_CHART_VERSION="${AGW_CHART_VERSION:-v2.3.0-rc.3}"
+AGW_CHART_VERSION="${AGW_CHART_VERSION:-v2.3.3}"
 AGW_MGMT_CHART="${AGW_MGMT_CHART:-oci://us-docker.pkg.dev/solo-public/solo-enterprise-helm/charts/management}"
 AGW_CHART="${AGW_CHART:-oci://us-docker.pkg.dev/solo-public/enterprise-agentgateway/charts/enterprise-agentgateway}"
 
