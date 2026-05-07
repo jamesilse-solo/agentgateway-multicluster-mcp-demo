@@ -139,8 +139,21 @@ glooMgmtServer:
     serverTlsSecretName: relay-server-tls-secret
     rootTlsSecretName: relay-root-tls-secret
 
+# Local agent on the management cluster — required for the management plane
+# to discover and observe its own cluster (workloads, mesh state, insights).
+# Uses the in-cluster service address so it doesn't traverse the LB hop.
 glooAgent:
-  enabled: false   # agent installed separately below
+  enabled: true
+  relay:
+    serverAddress: "gloo-mesh-mgmt-server.gloo-mesh.svc:9900"
+    clientTlsSecretName: relay-client-tls-secret
+    rootTlsSecretName: relay-root-tls-secret
+
+# Insights engine surfaces config-correctness, security, and best-practice
+# findings in the Gloo Mesh UI. Runs as part of the mgmt-server process; no
+# separate deployment.
+glooInsightsEngine:
+  enabled: true
 
 glooUi:
   enabled: true
@@ -158,7 +171,7 @@ telemetryCollector:
   enabled: false   # disabled: t3.large nodes have insufficient CPU for the DaemonSet
 EOF
 
-ok "Management plane installed on cluster1"
+ok "Management plane + local agent + insights engine installed on cluster1"
 
 ###############################################################################
 # 5. Expose management server relay as LoadBalancer (for cluster2 agent)
@@ -210,83 +223,60 @@ ${KC1} -n "${GM_NS}" get secret relay-root-tls-secret \
 ${KC1} -n "${GM_NS}" get secret relay-root-tls-secret \
   -o jsonpath='{.data.tls\.key}' | base64 -d > "${RELAY_TMP}/relay-root.key"
 
-# Generate client cert for agents, signed by the mgmt-plane root.
-# SAN is required — modern TLS (and Gloo Mesh pre-start check) rejects certs without it.
-cat > "${RELAY_TMP}/client-ext.cnf" <<EXTEOF
+# Generate per-cluster client certs, signed by the mgmt-plane root.
+# Each agent must present a cert whose SAN matches its cluster name —
+# the management server's relay-handshake checks this. A single shared
+# client cert (one SAN) cannot work for both clusters.
+_gen_agent_cert() {
+  local cluster_name="$1"
+  local out_prefix="$2"
+  cat > "${RELAY_TMP}/${cluster_name}-ext.cnf" <<EXTEOF
 [v3_req]
-subjectAltName = DNS:${C2}, DNS:gloo-mesh-agent.gloo-mesh
+subjectAltName = DNS:${cluster_name}, DNS:gloo-mesh-agent.gloo-mesh
 EXTEOF
-openssl req -newkey rsa:4096 -keyout "${RELAY_TMP}/relay-client.key" \
-  -out "${RELAY_TMP}/relay-client.csr" -nodes \
-  -subj "/CN=${C2}" &>/dev/null
-openssl x509 -req -in "${RELAY_TMP}/relay-client.csr" \
-  -CA "${RELAY_TMP}/relay-root.crt" -CAkey "${RELAY_TMP}/relay-root.key" \
-  -CAcreateserial -out "${RELAY_TMP}/relay-client.crt" -days 3650 \
-  -extfile "${RELAY_TMP}/client-ext.cnf" -extensions v3_req &>/dev/null
+  openssl req -newkey rsa:4096 -keyout "${out_prefix}.key" \
+    -out "${out_prefix}.csr" -nodes \
+    -subj "/CN=${cluster_name}" &>/dev/null
+  openssl x509 -req -in "${out_prefix}.csr" \
+    -CA "${RELAY_TMP}/relay-root.crt" -CAkey "${RELAY_TMP}/relay-root.key" \
+    -CAcreateserial -out "${out_prefix}.crt" -days 3650 \
+    -extfile "${RELAY_TMP}/${cluster_name}-ext.cnf" -extensions v3_req &>/dev/null
+}
 
-# Push relay secrets to cluster2
+_gen_agent_cert "${C1}" "${RELAY_TMP}/agent-c1"
+_gen_agent_cert "${C2}" "${RELAY_TMP}/agent-c2"
+
+# Push cluster1's agent client cert (SAN=cluster1) into cluster1
+${KC1} -n "${GM_NS}" create secret generic relay-client-tls-secret \
+  --from-file=tls.crt="${RELAY_TMP}/agent-c1.crt" \
+  --from-file=tls.key="${RELAY_TMP}/agent-c1.key" \
+  --from-file=ca.crt="${RELAY_TMP}/relay-root.crt" \
+  --dry-run=client -o yaml | ${KC1} apply -f -
+
+# Push cluster2's agent client cert (SAN=cluster2) + the trust anchor into cluster2
 ${KC2} -n "${GM_NS}" create secret generic relay-root-tls-secret \
   --from-file=ca.crt="${RELAY_TMP}/relay-root.crt" \
   --dry-run=client -o yaml | ${KC2} apply -f -
 ${KC2} -n "${GM_NS}" create secret generic relay-client-tls-secret \
-  --from-file=tls.crt="${RELAY_TMP}/relay-client.crt" \
-  --from-file=tls.key="${RELAY_TMP}/relay-client.key" \
+  --from-file=tls.crt="${RELAY_TMP}/agent-c2.crt" \
+  --from-file=tls.key="${RELAY_TMP}/agent-c2.key" \
   --from-file=ca.crt="${RELAY_TMP}/relay-root.crt" \
   --dry-run=client -o yaml | ${KC2} apply -f -
 
-# Also create relay-client-tls-secret on cluster1 for the local agent
-${KC1} -n "${GM_NS}" create secret generic relay-client-tls-secret \
-  --from-file=tls.crt="${RELAY_TMP}/relay-client.crt" \
-  --from-file=tls.key="${RELAY_TMP}/relay-client.key" \
-  --from-file=ca.crt="${RELAY_TMP}/relay-root.crt" \
-  --dry-run=client -o yaml | ${KC1} apply -f -
+ok "Per-cluster agent certs (SAN=cluster name) distributed to both clusters"
 
-ok "Relay certs distributed to both clusters"
+# Note: cluster1's local agent is installed as part of the gloo-platform-mgmt
+# release in section 4 (glooAgent.enabled=true). No separate release needed.
+# The agent now requires the relay-client-tls-secret distributed in section 6
+# above to be present before it can authenticate.
 
-###############################################################################
-# 8. Install Gloo Mesh agent on cluster1 (connects to local management server)
-###############################################################################
-log "Installing Gloo Mesh agent on cluster1"
+# Bounce cluster1's agent so it picks up the freshly distributed client cert
+# (helm install creates the deployment but the pod may have started before
+# the secret was applied).
+${KC1} -n "${GM_NS}" rollout restart deployment/gloo-mesh-agent 2>/dev/null || true
+${KC1} -n "${GM_NS}" rollout status deployment/gloo-mesh-agent --timeout=120s 2>/dev/null || true
 
-AGENT_REGISTRY_FLAGS_C1=""
-if [[ -n "${REGISTRY}" ]]; then
-  AGENT_REGISTRY_FLAGS_C1="
-    --set glooAgent.image.registry=${REGISTRY}/gloo-mesh
-    --set telemetryCollector.image.repository=${REGISTRY}/gloo-otel-collector"
-fi
-
-# shellcheck disable=SC2086
-helm upgrade --install gloo-platform-agent-c1 gloo-platform/gloo-platform \
-  --kube-context "${C1}" \
-  --namespace "${GM_NS}" \
-  --version "${GLOO_VERSION}" \
-  --wait --timeout 5m \
-  ${AGENT_REGISTRY_FLAGS_C1} \
-  -f - <<EOF
-common:
-  cluster: cluster1
-
-glooAgent:
-  enabled: true
-  relay:
-    serverAddress: "gloo-mesh-mgmt-server:9900"
-    clientTlsSecretName: relay-client-tls-secret
-    rootTlsSecretName: relay-root-tls-secret
-
-glooMgmtServer:
-  enabled: false
-glooUi:
-  enabled: false
-prometheus:
-  enabled: false
-telemetryGateway:
-  enabled: false
-
-telemetryCollector:
-  enabled: false
-EOF
-
-ok "Agent installed on cluster1"
+ok "Cluster1 local agent restarted to pick up distributed client cert"
 
 ###############################################################################
 # 9. Install Gloo Mesh agent on cluster2 (connects to cluster1 relay LB)
