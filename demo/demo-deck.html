@@ -852,21 +852,23 @@
           <div class="card purple" style="padding:1rem 1.1rem;">
             <span class="mono-tag purple">Restrict search.solo.io to just `search`</span>
             <pre style="font-family:'DM Mono',monospace;font-size:0.7rem;color:#9DA1BD;margin-top:0.5rem;line-height:1.5;background:transparent;border:none;padding:0;">apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayBackend
+kind: AgentgatewayPolicy
 metadata:
-  name: search-solo-io
+  name: search-solo-io-policy
 spec:
-  mcp:
-    targets:
-    - name: search-solo-io
-      static:
-        host: search.solo.io
-        port: 443
-      tls:
-        insecure: false
-      <span style="color:#1FEEB3">filter:
-        toolAllowlist:
-        - search</span></pre>
+  targetRefs:
+  - group: agentgateway.dev
+    kind: AgentgatewayBackend
+    name: search-solo-io
+  backend:
+    tls:
+      sni: search.solo.io
+    <span style="color:#1FEEB3">mcp:
+      authorization:
+        action: Allow
+        policy:
+          matchExpressions:
+          - 'mcp.tool.name == "search"'</span></pre>
           </div>
           <div class="card blue" style="padding:0.9rem 1.1rem;margin-top:0.8rem;">
             <span class="mono-tag blue">Effect on the agent</span>

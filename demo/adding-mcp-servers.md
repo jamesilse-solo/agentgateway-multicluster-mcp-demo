@@ -8,12 +8,13 @@ The accompanying helper script — [`add-mcp-server.sh`](add-mcp-server.sh) — 
 
 ## Resource model
 
-Two resources turn an MCP endpoint into a routable backend on the gateway. A third is needed only when the destination service lives in a different namespace from the gateway.
+Two resources turn an MCP endpoint into a routable backend on the gateway. A third (`AgentgatewayPolicy`) attaches upstream-TLS and tool-level RBAC. A fourth (`ReferenceGrant`) is needed only when the destination service lives in a different namespace from the gateway.
 
 | Resource | API group | What it does |
 |----------|-----------|--------------|
-| `AgentgatewayBackend` | `agentgateway.dev/v1alpha1` | Describes the MCP endpoint (the target host, port, transport, optional TLS) and tells AgentGateway "this is an MCP-protocol backend, not a plain HTTP one." Used as the `backendRef` of an HTTPRoute. |
+| `AgentgatewayBackend` | `agentgateway.dev/v1alpha1` | Describes the MCP endpoint (the target host, port, transport) and tells AgentGateway "this is an MCP-protocol backend, not a plain HTTP one." Used as the `backendRef` of an HTTPRoute. |
 | `HTTPRoute` | `gateway.networking.k8s.io/v1` (Kubernetes Gateway API) | Standard path-based routing rule attached to the AgentGateway `Gateway`. Matches a path prefix (e.g. `/mcp/search`) and points at the AgentgatewayBackend. |
+| `AgentgatewayPolicy` | `agentgateway.dev/v1alpha1` | Attaches policies to a backend via `targetRefs`: `backend.tls.sni` for upstream HTTPS SNI, `backend.mcp.authorization` for per-tool RBAC via CEL `matchExpressions`. Optional but required for external HTTPS endpoints and tool filtering. |
 | `ReferenceGrant` | `gateway.networking.k8s.io/v1beta1` | Cross-namespace permission: lets an HTTPRoute in namespace A reference an AgentgatewayBackend (or Service) in namespace B. Without it, the gateway controller refuses the reference. |
 
 The gateway itself — `agentgateway-hub` in `agentgateway-system` — is installed once via `scripts/01-install.sh` and configured via `scripts/02-configure.sh`. Every new MCP server is just a backend + route on top of that existing gateway.
@@ -66,7 +67,7 @@ Agents now reach this server at `http://<agw-lb>/mcp/local`.
 
 ## Pattern 2 — External (off-cluster) MCP server
 
-The MCP server lives outside the cluster — a public SaaS endpoint, a partner API, or a self-hosted service on a different VPC. The pattern is identical to Pattern 1; only the `host` and TLS settings change.
+The MCP server lives outside the cluster — a public SaaS endpoint, a partner API, or a self-hosted service on a different VPC. The Backend + HTTPRoute pair is identical to Pattern 1; upstream TLS is configured on an `AgentgatewayPolicy` attached to the backend.
 
 This is what the demo uses for the Solo.io documentation search MCP server at `https://search.solo.io/mcp`:
 
@@ -74,7 +75,7 @@ This is what the demo uses for the Solo.io documentation search MCP server at `h
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayBackend
 metadata:
-  name: search-solo-io-backend
+  name: search-solo-io
   namespace: agentgateway-system
 spec:
   mcp:
@@ -83,14 +84,12 @@ spec:
     - name: search-solo-io
       static:
         host: search.solo.io       # Public DNS name
-        port: 443                  # HTTPS
-      tls:
-        insecure: false            # Default; production should validate the upstream cert chain
+        port: 443                  # HTTPS — TLS is configured on the policy below
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: mcp-route-search
+  name: search-solo-io-route
   namespace: agentgateway-system
 spec:
   parentRefs:
@@ -104,8 +103,25 @@ spec:
     backendRefs:
     - group: agentgateway.dev
       kind: AgentgatewayBackend
-      name: search-solo-io-backend
+      name: search-solo-io
       namespace: agentgateway-system
+---
+# Policy attaches to the backend by targetRefs. `backend.tls.sni` sets the
+# SNI hostname for the upstream HTTPS connection. Add backend.mcp.authorization
+# here to filter tools (see "Restricting tools" below).
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: search-solo-io-policy
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+  - group: agentgateway.dev
+    kind: AgentgatewayBackend
+    name: search-solo-io
+  backend:
+    tls:
+      sni: search.solo.io
 ```
 
 Agents call `http://<agw-lb>/mcp/search` and the gateway terminates the agent's connection, validates auth, applies any rate limits, then opens an outbound HTTPS connection to `search.solo.io:443`. The SaaS sees one connection per gateway pod — perfect for IP allowlists.
@@ -203,32 +219,41 @@ Choose Variant A when the platform team controls the routing policy (URL paths, 
 
 An MCP server typically exposes many tools (`search`, `list_repos`, `delete_repo`, etc.). Some are safe to expose broadly; others should be admin-only. AgentGateway can filter the **`tools/list`** response and reject **`tools/call`** for tools an agent identity isn't entitled to.
 
-### Tool filtering on the backend
+### Tool filtering via AgentgatewayPolicy
 
-The most explicit way: declare an allowlist on the `AgentgatewayBackend` so the gateway only ever surfaces those tools. This is appropriate when a *whole* tier of agents is meant to use only a subset.
+Attach an `AgentgatewayPolicy` to the backend with `backend.mcp.authorization`. The policy uses CEL `matchExpressions` against MCP request fields — most commonly `mcp.tool.name`. This is appropriate when a *whole* tier of agents is meant to use only a subset of an MCP server's tools.
 
-Example — restrict the Solo.io search MCP server to **only the `search` tool**, hiding any future tools the server adds:
+Example — restrict the Solo.io search MCP server to **only the `search` tool**, hiding `get_chunks`, `get_full_page`, and any future tools the server adds:
 
 ```yaml
 apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayBackend
+kind: AgentgatewayPolicy
 metadata:
-  name: search-solo-io-search-only
+  name: search-solo-io-policy
   namespace: agentgateway-system
 spec:
-  mcp:
-    failureMode: FailOpen
-    targets:
-    - name: search-solo-io
-      static:
-        host: search.solo.io
-        port: 443
-      filter:
-        toolAllowlist:               # Only these tools are exposed
-        - search
+  targetRefs:
+  - group: agentgateway.dev
+    kind: AgentgatewayBackend
+    name: search-solo-io
+  backend:
+    tls:
+      sni: search.solo.io
+    mcp:
+      authorization:
+        action: Allow                # Allow | Deny | Require
+        policy:
+          matchExpressions:
+          - 'mcp.tool.name == "search"'
 ```
 
-After applying this, agents calling `tools/list` against `/mcp/search` see exactly one tool (`search`); attempts to call any other method get an MCP permission error from the gateway *without ever reaching `search.solo.io`*.
+After applying this, agents calling `tools/list` against `/mcp/search` see exactly one tool (`search`); attempts to call `get_chunks` or any other method are rejected at the gateway with `"Unknown tool: <name>"` *without ever reaching `search.solo.io`*.
+
+Combine multiple tools with CEL `||`:
+```yaml
+matchExpressions:
+- 'mcp.tool.name == "search" || mcp.tool.name == "get_chunks"'
+```
 
 ### Per-identity tool RBAC (OPA)
 

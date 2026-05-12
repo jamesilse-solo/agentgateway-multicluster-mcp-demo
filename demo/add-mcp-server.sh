@@ -62,21 +62,8 @@ done
 BACKEND_NS="${BACKEND_NS:-${AGW_NAMESPACE}}"
 KC="kubectl --context=${KUBE_CONTEXT}"
 
-# Build the backend YAML
-TLS_BLOCK=""
-[[ "${TLS}" == "true" ]] && TLS_BLOCK="
-      tls:
-        insecure: false"
-
-FILTER_BLOCK=""
-if [[ -n "${TOOL_ALLOWLIST}" ]]; then
-  TOOLS_YAML=$(echo "${TOOL_ALLOWLIST}" | tr ',' '\n' | sed 's/^/        - /')
-  FILTER_BLOCK="
-      filter:
-        toolAllowlist:
-${TOOLS_YAML}"
-fi
-
+# AgentgatewayBackend — just the upstream connection details.
+# TLS + tool-RBAC live on AgentgatewayPolicy, generated below.
 BACKEND=$(cat <<EOF
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayBackend
@@ -90,9 +77,49 @@ spec:
     - name: ${NAME}
       static:
         host: ${HOST}
-        port: ${PORT}${TLS_BLOCK}${FILTER_BLOCK}
+        port: ${PORT}
 EOF
 )
+
+# AgentgatewayPolicy — adds upstream TLS (sni) and per-tool RBAC. Only
+# emitted when --tls or --tool-allowlist is set; otherwise omitted.
+POLICY=""
+if [[ "${TLS}" == "true" || -n "${TOOL_ALLOWLIST}" ]]; then
+  TLS_BLOCK=""
+  [[ "${TLS}" == "true" ]] && TLS_BLOCK="
+    tls:
+      sni: ${HOST}"
+
+  AUTHZ_BLOCK=""
+  if [[ -n "${TOOL_ALLOWLIST}" ]]; then
+    # Build a CEL OR-expression over the requested tool names.
+    # Example: name=="search" || name=="get_chunks"
+    EXPR=$(echo "${TOOL_ALLOWLIST}" | tr ',' '\n' | sed 's/^/mcp.tool.name == "/;s/$/"/' | paste -sd '|' -)
+    EXPR="${EXPR//|/ || }"
+    AUTHZ_BLOCK="
+    mcp:
+      authorization:
+        action: Allow
+        policy:
+          matchExpressions:
+          - '${EXPR}'"
+  fi
+
+  POLICY=$(cat <<EOF
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: ${NAME}-policy
+  namespace: ${BACKEND_NS}
+spec:
+  targetRefs:
+  - group: agentgateway.dev
+    kind: AgentgatewayBackend
+    name: ${NAME}
+  backend:${TLS_BLOCK}${AUTHZ_BLOCK}
+EOF
+)
+fi
 
 # HTTPRoute (always in the gateway's namespace; backend may be elsewhere)
 ROUTE=$(cat <<EOF
@@ -144,6 +171,9 @@ fi
 COMBINED="${BACKEND}
 ---
 ${ROUTE}"
+[[ -n "${POLICY}" ]]   && COMBINED="${COMBINED}
+---
+${POLICY}"
 [[ -n "${REFGRANT}" ]] && COMBINED="${COMBINED}
 ---
 ${REFGRANT}"
