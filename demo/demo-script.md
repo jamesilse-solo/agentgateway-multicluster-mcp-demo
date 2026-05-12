@@ -1,8 +1,8 @@
-# Solo.io AgentGateway — 35-Minute Demo Script
+# Solo.io AgentGateway — 42-Minute Demo Script
 
 **Audience:** Enterprise architects  
 **Presenter:** SE team  
-**Duration:** 35 minutes  
+**Duration:** ~42 minutes    
 **Core messages:** (1) Centralized MCP gateway + registry, (2) Auth enforcement at the platform layer, (3) Bidirectional cross-cluster federation
 
 ---
@@ -220,7 +220,92 @@ Navigate to Gloo Mesh UI, show the traffic:
 
 ---
 
-## Segment 6 — Q&A (2 min)
+## Segment 6 — External MCP Servers (4 min)
+
+**Show:** Slide 7 (External MCP Servers) + terminal  
+**Goal:** Show that a public SaaS MCP server is wired up with the same two resources as an internal one — and demonstrate the call live.
+
+**Slide 7**
+
+> "Up to now we've shown two MCP servers, both inside the cluster. In practice every customer has a mix of internal and external MCP servers — partner APIs, public SaaS like Atlassian or Salesforce, or vendor-supplied MCP tools. We'll use the Solo.io documentation search MCP server as our example because it's public and you can run this yourself after the call."
+
+> "Look at the wireframe. The agent calls the same gateway it always calls. The path is `/mcp/search` instead of `/mcp` or `/mcp/remote`. The gateway terminates the agent's connection, validates the JWT, applies rate limits — all the same controls as for internal MCP. Then it opens a fresh HTTPS connection out to `search.solo.io:443`."
+
+> "Two operational benefits. First: the SaaS provider sees one stable source IP — the gateway's load balancer — instead of random pod IPs that change every deployment. That makes IP allowlisting trivial. Second: the gateway logs every call. You can audit which agents talked to `search.solo.io`, when, and what they asked for — the same audit trail as internal traffic."
+
+> "And the kicker: adding a new external MCP server is the same two resources — an `AgentgatewayBackend` and an `HTTPRoute` — that you saw on the internal one. Identical mental model."
+
+**Run live**
+
+```bash
+# Show the actual resources on the cluster
+kubectl --context cluster1 -n agentgateway-system get agentgatewaybackend search-solo-io -o yaml | head -20
+kubectl --context cluster1 -n agentgateway-system get httproute search-solo-io-route -o yaml | head -20
+
+# Hit the external MCP server through AGW with the demo JWT
+AGW_LB=$(kubectl --context cluster1 -n agentgateway-system get gateway agentgateway-hub -o jsonpath='{.status.addresses[0].value}')
+TOKEN=$(... acquire from Dex ...)
+curl -s -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -X POST "http://$AGW_LB/mcp/search" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | head -3
+```
+
+Show the `tools/list` response — the search server's tools come back through the same gateway, same auth flow.
+
+**Key message:**
+
+> "There is no 'special' path for external MCP. It's just another backend on the same gateway. Whatever rate-limiting, identity, observability, or egress policy you apply to internal calls applies to external ones — uniformly."
+
+> "Reference doc lives at `demo/adding-mcp-servers.md` in the repo, including a helper script `demo/add-mcp-server.sh` that generates the YAML for any of the three patterns: local, external, cross-namespace with ReferenceGrant."
+
+---
+
+## Segment 7 — Tool-Level RBAC (3 min)
+
+**Show:** Slide 8 (Tool-Level RBAC) + terminal  
+**Goal:** Demonstrate that the gateway can restrict *which tools* an agent can call on a backend — not just which backends it can reach.
+
+**Slide 8**
+
+> "An MCP server exposes a set of tools. The Solo.io search MCP server, for example, exposes a `search` tool — and potentially future tools the team adds over time. For some agents you want them to see only `search`. Maybe other tools are admin-only, or unsafe, or just irrelevant."
+
+> "Look at the right column. We've declared `toolAllowlist: [search]` on the backend. From the moment that policy is applied, the gateway filters `tools/list` to return only the `search` tool. Any agent attempting to call a different tool gets an MCP permission error — and crucially, the upstream `search.solo.io` never even sees that request."
+
+> "This is the simpler 'whole-tier' lever — every agent that routes through this backend sees the same allowlist. For per-identity RBAC — 'admins can delete, support agents can only read' — the same gateway runs OPA Rego policies in ExtAuth and decides per call based on JWT claims."
+
+**Run live**
+
+```bash
+# Before the policy: show all tools available on search.solo.io directly
+curl -s -X POST https://search.solo.io/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+
+# After the policy: through the gateway, only `search` is exposed
+curl -s -H "Authorization: Bearer $TOKEN" ... \
+  -X POST "http://$AGW_LB/mcp/search" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+Highlight: the list is shorter through the gateway. Then attempt a non-allowed tool:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" ... \
+  -X POST "http://$AGW_LB/mcp/search" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"<non-allowed-tool>"}}'
+# → JSON-RPC error: method/tool not authorized
+```
+
+**Key message:**
+
+> "Per-tool authorisation is a feature most agent-platform teams build themselves, badly. Doing it at the gateway means it's applied uniformly, audited, and the MCP server team doesn't have to know about it. The same lever works for internal and external MCP — `search.solo.io` doesn't change. The gateway changes what it lets through."
+
+---
+
+## Segment 8 — Q&A (2 min)
 
 **Show:** Slide 6 (Federation) as backdrop  
 **Goal:** Invite questions. Have these prompts ready if the room is silent.

@@ -742,13 +742,153 @@
     </div>
   </div>
 
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- SLIDE 7 — EXTERNAL MCP SERVERS                          -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div class="slide" id="slide-7-external-mcp">
+    <div class="topbar">
+      <span class="wordmark">Solo.io</span>
+      <span class="topbar-tag">EXTERNAL MCP SERVERS</span>
+    </div>
+    <div class="slide-body">
+      <div class="overline">SaaS &amp; Public Endpoints</div>
+      <h2 class="section-title">External tools, same gateway. <span>Agents don't know the difference.</span></h2>
+      <p class="section-sub">An MCP server outside the cluster — public SaaS like <code style="font-family:DM Mono,monospace;font-size:0.85em;color:#1FEEB3">search.solo.io/mcp</code>, a partner API, a self-hosted service — is wired up with exactly the same two resources as an internal one. Auth, rate limits, observability still apply.</p>
+
+      <div class="two-col" style="margin-top:1rem;">
+        <div class="two-col-left">
+          <ul class="bullet-list">
+            <li><strong>Path: <code style="font-family:DM Mono,monospace;font-size:0.85em;color:#CC85FF">/mcp/search</code></strong> on the same AGW Hub LB the agents already use</li>
+            <li><strong>Outbound TLS</strong> to <code style="font-family:DM Mono,monospace;font-size:0.85em">search.solo.io:443</code> — the gateway terminates the agent's connection, then originates a fresh HTTPS connection upstream</li>
+            <li><strong>Single source IP to the SaaS</strong> — the AGW Hub LB's public IP. Partners can write a one-line allowlist instead of tracking pod IPs</li>
+            <li><strong>Same auth + audit</strong> as internal MCP — the agent's JWT is validated, every call shows in the AGW Enterprise UI traces</li>
+            <li><strong>Drops in zero extra agent code</strong> — agents discover <code style="font-family:DM Mono,monospace;font-size:0.85em">io.solo/search-solo-io</code> from the registry and just call</li>
+          </ul>
+        </div>
+        <div class="two-col-right">
+          <!-- Wireframe: agent → AGW → search.solo.io -->
+          <svg viewBox="0 0 360 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-height:340px;">
+            <defs>
+              <marker id="m7a" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+                <path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#8023C3" stroke-width="1.2"/>
+              </marker>
+              <marker id="m7b" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+                <path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#1FEEB3" stroke-width="1.2"/>
+              </marker>
+            </defs>
+            <!-- Cluster boundary -->
+            <rect x="14" y="20" width="200" height="240" rx="10"
+              fill="rgba(128,35,195,0.04)" stroke="rgba(128,35,195,0.4)"
+              stroke-width="1" stroke-dasharray="4 3"/>
+            <text x="22" y="36" font-family="DM Mono" font-size="7.5" fill="rgba(128,35,195,0.7)" letter-spacing="0.8">CLUSTER 1 · agentgateway-system</text>
+
+            <!-- Agent -->
+            <rect x="30" y="60" width="80" height="40" rx="6"
+              fill="rgba(128,35,195,0.18)" stroke="#8023C3" stroke-width="1.4"/>
+            <text x="70" y="80" text-anchor="middle" font-family="Figtree" font-weight="600" font-size="9.5" fill="white">AI Agent</text>
+            <text x="70" y="93" text-anchor="middle" font-family="DM Mono" font-size="7" fill="#CC85FF">LLM client</text>
+
+            <!-- AGW Hub -->
+            <rect x="30" y="140" width="180" height="55" rx="6"
+              fill="rgba(128,35,195,0.25)" stroke="#8023C3" stroke-width="1.5"/>
+            <text x="120" y="160" text-anchor="middle" font-family="Figtree" font-weight="600" font-size="10" fill="white">AgentGateway Enterprise</text>
+            <text x="120" y="175" text-anchor="middle" font-family="DM Mono" font-size="7" fill="#CC85FF">ExtAuth · rate-limit · traces</text>
+            <text x="120" y="188" text-anchor="middle" font-family="DM Mono" font-size="7" fill="#CC85FF">HTTPRoute  /mcp/search</text>
+
+            <!-- AGW LB callout -->
+            <rect x="30" y="208" width="180" height="38" rx="6"
+              fill="rgba(31,238,179,0.10)" stroke="rgba(31,238,179,0.5)" stroke-width="1.2"/>
+            <text x="120" y="225" text-anchor="middle" font-family="Figtree" font-weight="600" font-size="9" fill="#1FEEB3">AGW Hub LoadBalancer</text>
+            <text x="120" y="238" text-anchor="middle" font-family="DM Mono" font-size="7" fill="rgba(31,238,179,0.7)">single stable egress IP</text>
+
+            <!-- Agent → AGW -->
+            <line x1="70" y1="100" x2="70" y2="140" stroke="#8023C3" stroke-width="1.5" marker-end="url(#m7a)"/>
+            <rect x="78" y="115" width="76" height="14" rx="3" fill="#151927"/>
+            <text x="116" y="125" text-anchor="middle" font-family="DM Mono" font-size="7" fill="#CC85FF">/mcp/search · Bearer</text>
+
+            <!-- AGW → external (crossing cluster boundary) -->
+            <path d="M210,225 L260,225" stroke="#1FEEB3" stroke-width="1.6" marker-end="url(#m7b)"/>
+            <text x="237" y="218" text-anchor="middle" font-family="DM Mono" font-size="6.5" fill="#1FEEB3">HTTPS 443</text>
+
+            <!-- Internet / external -->
+            <rect x="260" y="190" width="90" height="64" rx="6"
+              fill="rgba(32,183,243,0.10)" stroke="rgba(32,183,243,0.5)" stroke-width="1.2"/>
+            <text x="305" y="208" text-anchor="middle" font-family="Figtree" font-weight="600" font-size="9.5" fill="white">search.solo.io</text>
+            <text x="305" y="222" text-anchor="middle" font-family="DM Mono" font-size="7" fill="#20B7F3">public MCP server</text>
+            <text x="305" y="236" text-anchor="middle" font-family="DM Mono" font-size="7" fill="#20B7F3">(Solo docs index)</text>
+            <text x="305" y="248" text-anchor="middle" font-family="DM Mono" font-size="6.5" fill="rgba(32,183,243,0.6)">off-cluster</text>
+
+            <!-- Resources used (footer) -->
+            <text x="14" y="278" font-family="DM Mono" font-size="6.5" fill="#5C6178">AgentgatewayBackend + HTTPRoute · same two resources as internal MCP</text>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- SLIDE 8 — TOOL-LEVEL RBAC                               -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div class="slide" id="slide-8-tool-rbac">
+    <div class="topbar">
+      <span class="wordmark">Solo.io</span>
+      <span class="topbar-tag">TOOL-LEVEL RBAC</span>
+    </div>
+    <div class="slide-body">
+      <div class="overline">Per-Tool Access Control</div>
+      <h2 class="section-title">Restrict what an agent can call. <span>Not just where it can connect.</span></h2>
+      <p class="section-sub">An MCP server typically exposes many tools. The gateway can hide the ones a given agent has no business calling — applied at the backend, evaluated before the upstream server ever sees the request.</p>
+
+      <div class="two-col" style="margin-top:1rem;">
+        <div class="two-col-left">
+          <ul class="bullet-list">
+            <li><strong>Backend-side allowlist</strong> — declare the allowed tool names on the <code style="font-family:DM Mono,monospace;font-size:0.85em;color:#CC85FF">AgentgatewayBackend</code> and the gateway filters them out of <code style="font-family:DM Mono,monospace;font-size:0.85em">tools/list</code> AND rejects <code style="font-family:DM Mono,monospace;font-size:0.85em">tools/call</code> for everything else</li>
+            <li><strong>Defense in depth</strong> — even a prompt-injected agent can only call what's been pre-authorised</li>
+            <li><strong>Per-identity RBAC</strong> — OPA Rego in ExtAuth handles the harder case ("admins can delete, others can only search") using JWT claims</li>
+            <li><strong>Whole-tier isolation</strong> — the allowlist on the backend is the simple "every agent through this route sees only these tools" lever</li>
+          </ul>
+        </div>
+        <div class="two-col-right">
+          <div class="card purple" style="padding:1rem 1.1rem;">
+            <span class="mono-tag purple">Restrict search.solo.io to just `search`</span>
+            <pre style="font-family:'DM Mono',monospace;font-size:0.7rem;color:#9DA1BD;margin-top:0.5rem;line-height:1.5;background:transparent;border:none;padding:0;">apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: search-solo-io
+spec:
+  mcp:
+    targets:
+    - name: search-solo-io
+      static:
+        host: search.solo.io
+        port: 443
+      tls:
+        insecure: false
+      <span style="color:#1FEEB3">filter:
+        toolAllowlist:
+        - search</span></pre>
+          </div>
+          <div class="card blue" style="padding:0.9rem 1.1rem;margin-top:0.8rem;">
+            <span class="mono-tag blue">Effect on the agent</span>
+            <div style="font-family:'DM Mono',monospace;font-size:0.72rem;color:#9DA1BD;line-height:1.7;margin-top:0.4rem;">
+              <div style="color:#1FEEB3;">tools/list → ["search"]   (1 tool)</div>
+              <div style="color:#1FEEB3;">tools/call name=search → 200 OK</div>
+              <div style="color:#FF6E6E;">tools/call name=delete → 403 MCP permission error</div>
+              <div style="color:#5C6178;font-size:0.66rem;margin-top:0.4rem;">↳ rejected at the gateway; never reaches search.solo.io</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div><!-- /deck -->
 
 <!-- ── Navigation ── -->
 <nav class="slide-nav" id="slideNav">
   <button id="prevBtn" onclick="changeSlide(-1)" disabled>&#8592;</button>
   <div style="display:flex;gap:0.5rem;align-items:center;" id="dotContainer"></div>
-  <span class="slide-counter" id="counter">1 / 6</span>
+  <span class="slide-counter" id="counter">1 / 8</span>
   <button id="nextBtn" onclick="changeSlide(1)">&#8594;</button>
 </nav>
 
