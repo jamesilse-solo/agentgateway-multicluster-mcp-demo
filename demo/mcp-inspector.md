@@ -10,9 +10,9 @@ This walks through pointing the [Model Context Protocol Inspector](https://githu
 Two scenarios are covered:
 
 - **Scenario A — Jumphost** (sections 1–4): a managed jumphost with `kubectl` + AWS auth, where `./demo/portforward.sh` is already running.
-- **Scenario B — Laptop hitting the AGW public IP directly** (section 5): the customer's laptop running Inspector locally and connecting straight to the gateway's external LoadBalancer. Includes the **"my JWT issuer is `dex.dex.svc.cluster.local` — does this break Bearer auth?"** debugging path.
+- **Scenario B — Laptop hitting the AGW public IP directly** (section 5): the customer's laptop running Inspector locally and connecting straight to the gateway's external LoadBalancer. Both **Custom Headers Bearer** and Inspector's **OAuth tab** work from a laptop because `/dex/*` is exposed through the AGW LB (see section 6).
 
-> **Common assumption for both scenarios**: `./demo/portforward.sh` is running somewhere reachable from where you run Inspector — it gives you `localhost:5556` for Dex token acquisition. The AGW Hub `/mcp` endpoint is a public cloud `LoadBalancer` and does **not** need to be port-forwarded.
+> **Common assumption**: the AGW Hub `/mcp` endpoint is a public cloud `LoadBalancer` and does **not** need port-forwarding. Dex (`/dex/*`) is also exposed through the same LB, so token acquisition from a laptop no longer requires a port-forward. `./demo/portforward.sh` is still useful for the jumphost workflow and for the supporting UIs (AGW UI on 4000, Registry on 8080, Gloo Mesh UI on 8090).
 
 ---
 
@@ -21,7 +21,7 @@ Two scenarios are covered:
 | Tool | Why |
 |------|-----|
 | Node.js ≥ 18 + `npx` | MCP Inspector ships as an npm package; `npx` invokes it without a global install |
-| `kubectl` (already configured for `cluster1-singtel`) | port-forward Dex on 5556 (handled by `portforward.sh`) |
+| `kubectl` (already configured for `cluster1`) | port-forward Dex on 5556 (handled by `portforward.sh`) |
 | `curl`, `jq` | Acquire and decode the Bearer JWT |
 | The AGW Hub LB hostname | Printed by `portforward.sh` under the **AgentGateway MCP Endpoints** section |
 
@@ -34,7 +34,7 @@ The AGW Hub LB is publicly reachable on the internet (it's a cloud `LoadBalancer
 The `portforward.sh` output's section 5 prints it, but you can re-resolve it on the fly:
 
 ```bash
-export AGW_LB=$(kubectl --context cluster1-singtel -n agentgateway-system \
+export AGW_LB=$(kubectl --context cluster1 -n agentgateway-system \
   get gateway agentgateway-hub \
   -o jsonpath='{.status.addresses[0].value}')
 
@@ -191,24 +191,31 @@ The AgentRegistry exposes its catalog as an MCP server. `tools/list` returns syn
 
 ## 5. Scenario B — Laptop hitting the AGW public IP/hostname
 
-This is for the case where a customer (or you) runs MCP Inspector **directly on a laptop** and connects to the AgentGateway's public LoadBalancer hostname/IP — no jumphost involved as a hop for the MCP traffic itself. The token still has to come from somewhere; either the laptop has `kubectl` access or there's an `ssh -L` tunnel through a jumphost that does.
+This is for the case where a customer (or you) runs MCP Inspector **directly on a laptop** and connects to the AgentGateway's public LoadBalancer hostname/IP — no jumphost involved as a hop for the MCP traffic itself.
 
-> **TL;DR**: use the **same manual Bearer flow** as the jumphost scenario. **Do not** use Inspector's "OAuth" / "Auto Connect" tab — see section 6 for why.
+Two paths both work from a laptop:
+
+- **Custom Headers Bearer** (sections 5.2–5.4) — fast, always reliable, doesn't depend on Inspector's OAuth implementation.
+- **Inspector's OAuth tab** — also works because `/dex/*` is exposed through the AGW LB (see section 6). The token, login redirect, and callback all resolve from the laptop with no port-forward or VPN.
 
 ### 5.1 Pre-reqs on the laptop
 
-- AWS SSO logged in (`aws sso login`) and `kubectl` configured for `cluster1-singtel`, **OR** an `ssh -L 5556:localhost:5556 your-user@jumphost` tunnel up against a jumphost where `./demo/portforward.sh` is running.
-- Node ≥ 18 (`node --version`) — required by `npx`.
+- Node ≥ 18 (`node --version`) — required by `npx @modelcontextprotocol/inspector`.
+- Network egress to the AGW LB hostname on port 80 (corporate proxies / split-tunnel VPNs can block this — `curl -I http://<agw-lb>/dex/.well-known/openid-configuration` is the quickest pre-flight).
+
+`kubectl` access is **not required** for Inspector itself — the laptop talks to the gateway over HTTP only.
 
 ### 5.2 Acquire a JWT on the laptop
 
-Same flow as `demo/send-traffic.sh` — port-forward Dex locally (or use the ssh tunnel), then password-grant:
+Hit the Dex `/token` endpoint **directly through the AGW LB** — no port-forward needed:
 
 ```bash
-# Skip the next line if you already have an ssh -L 5556 tunnel up to a jumphost
-kubectl --context=cluster1-singtel -n dex port-forward svc/dex 5556:5556 &
+export AGW_LB=$(kubectl --context=cluster1 -n agentgateway-system \
+  get gateway agentgateway-hub \
+  -o jsonpath='{.status.addresses[0].value}')
+# Or, if you don't have kubectl access, ask the cluster admin for the LB hostname.
 
-export TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
+export TOKEN=$(curl -s -X POST "http://${AGW_LB}/dex/token" \
   -d 'grant_type=password' \
   -d 'username=demo@example.com' \
   -d 'password=demo-pass' \
@@ -217,16 +224,17 @@ export TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
   -d 'scope=openid email profile' \
   | jq -r '.id_token')
 
-# Sanity-check the token has an exp far enough in the future:
-echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq '.exp, .iss, .aud'
+# Sanity-check exp/iss/aud — JWT segments use URL-safe base64 without padding,
+# so the naive `base64 -d` doesn't work. Use python or pad + tr:
+python3 -c "import sys,base64,json; s='$TOKEN'.split('.')[1]; s+='='*(-len(s)%4); d=json.loads(base64.urlsafe_b64decode(s)); print('exp',d['exp'],'iss',d['iss'],'aud',d['aud'])"
 ```
 
-The `iss` in the token will be `http://dex.dex.svc.cluster.local:5556/dex/`. **That's fine.** Section 6 explains why the laptop never has to reach that URL.
+The `iss` claim will be `http://<agw-lb>/dex` — the same URL the laptop can reach. That's what makes the OAuth tab work too.
 
 ### 5.3 Resolve the AGW Hub LB
 
 ```bash
-export AGW_LB=$(kubectl --context=cluster1-singtel -n agentgateway-system \
+export AGW_LB=$(kubectl --context=cluster1 -n agentgateway-system \
   get gateway agentgateway-hub \
   -o jsonpath='{.status.addresses[0].value}')
 
@@ -251,19 +259,25 @@ In the connection panel:
 
 Click **Connect**, then **List Tools**.
 
-> **Do NOT use the "OAuth" tab.** Inspector's OAuth mode does RFC 9728 / 8414 discovery against the issuer URL embedded in the token — and that URL (`dex.dex.svc.cluster.local`) only resolves inside the cluster. With Custom Headers Bearer, Inspector simply attaches your token to every request; the gateway's ExtAuth validates it server-side. See section 6.
+> Inspector's **"OAuth" tab also works** in this demo because `/dex/*` is routed through the AGW LB and the JWT issuer matches that public URL. If you'd rather Inspector handle the full OAuth round-trip (browser-based login, callback, token exchange), select **OAuth** instead of Custom Headers and click Connect — you'll be redirected to the Dex login page, sign in as `demo@example.com / demo-pass`, and Inspector will complete the rest. See section 6 for the architecture that makes this work.
 
 ---
 
-## 6. The cluster-FQDN issuer question
+## 6. How Dex is reachable from outside the cluster
 
-Q: *"The JWT's `iss` is `http://dex.dex.svc.cluster.local:5556/dex/` — an in-cluster hostname I can't reach from my laptop. Doesn't that break things?"*
+Q: *"What changed so the OAuth flow works from a laptop?"*
 
-It depends on what's doing the validation:
+The demo's `05-extauth.sh` script puts three pieces in place:
 
-- **Manual Bearer flow** (what sections 4 and 5 use): **not affected.** The JWT's `iss` claim is just a string the gateway's ExtAuth uses to look up JWKS — via in-cluster DNS, from inside the cluster, where the FQDN does resolve. Your laptop never reaches the issuer URL. It simply presents the token; the gateway accepts or rejects it.
-- **Automatic OAuth discovery / authorization-code flow** (what Inspector's "OAuth" tab tries to do): **would fail from a laptop.** Inspector would try to fetch `http://dex.dex.svc.cluster.local:5556/dex/.well-known/openid-configuration` — a hostname only resolvable inside the cluster — and time out. Additionally, this demo's gateway does not publish OAuth metadata (no `resourceMetadata` configured, no `/.well-known/oauth-protected-resource` route), so auto-discovery can't find anything even if the laptop could reach Dex. There's no useful path here for the laptop scenario — stick with Custom Headers Bearer.
-- **Production-grade fix** (out of scope for this doc — brief pointer): expose `/dex` via a new HTTPRoute attached to the existing `dex-backend` AgentgatewayBackend (see `demo/adding-mcp-servers.md` for the pattern), change Dex's configured `issuer` to `http://<agw-lb>/dex`, update ExtAuth's `AuthConfig.oauth2.oidcAuthorizationCode.issuerUrl` to match, and optionally add `resourceMetadata` on an `AgentgatewayPolicy` so MCP clients can do auto-discovery. After that, both flows work for external clients.
+1. **`dex-route` HTTPRoute** — exposes `/dex/*` on the AGW Hub LoadBalancer, backed by the in-cluster Dex Service via `dex-backend`. Path is left unauthenticated (the ExtAuth policy is scoped to specific MCP/UI routes, not the whole Gateway), otherwise the login redirect would itself need a valid session.
+2. **Dex `issuer` patched** to `http://<agw-lb>/dex` — every JWT Dex issues now has an `iss` claim that's resolvable from any external client.
+3. **ExtAuth `AuthConfig.issuerUrl`** matches Dex's `issuer` — JWKS fetches happen inside the cluster (so cluster-internal DNS still works for that), but the validation comparison against the token's `iss` claim succeeds because both sides use the public URL.
+
+Consequences:
+
+- **Custom Headers Bearer** (sections 4 and 5.4): unchanged — still the simplest path.
+- **OAuth tab in Inspector**: works because Inspector's automatic discovery (`/.well-known/openid-configuration`), the user-agent login redirect (`/dex/auth/...`), and the token exchange (`/dex/token`) are all reachable through the LB.
+- **`resourceMetadata` / RFC 9728 protected-resource discovery**: still not configured. MCP clients that strictly enforce RFC 9728 won't find an `oauth-protected-resource` document on `/mcp` — but Inspector's OAuth tab falls back to the `WWW-Authenticate` challenge model and works fine.
 
 ---
 
@@ -273,14 +287,15 @@ It depends on what's doing the validation:
 |---------|-------------|-----|
 | `HTTP 302 Found` redirect to `/dex/auth` | Missing or expired Bearer token | Re-run section 2 (or 5.2) to refresh `$TOKEN` |
 | `HTTP 401 Unauthorized` | Token tampered or wrong audience | Decode the token and check `aud`/`iss` match the gateway's `AuthConfig`; re-acquire |
-| `HTTP 404 Not Found` | Wrong path; the route doesn't exist on the gateway | `kubectl --context cluster1-singtel -n agentgateway-system get httproute` to list registered paths |
+| `HTTP 404 Not Found` | Wrong path; the route doesn't exist on the gateway | `kubectl --context cluster1 -n agentgateway-system get httproute` to list registered paths |
 | Inspector hangs at "Connecting…" | Network egress is blocked, OR the AGW LB isn't reachable on port 80 | `curl -v http://${AGW_LB}/mcp` — should return at least an HTTP response. If not, check security groups / corporate proxy |
 | `tools/list` returns fewer tools than the upstream MCP server | Working as designed — `AgentgatewayPolicy.mcp.authorization` is filtering. See `demo/adding-mcp-servers.md` for the policy mechanism |
-| `connection refused` to `localhost:5556` | `portforward.sh` not running or Dex port-forward died | Start a new terminal: `./demo/portforward.sh` |
-| Inspector's "OAuth" tab redirects to `dex.dex.svc.cluster.local` and hangs | Inspector is trying automatic OIDC discovery against an in-cluster issuer | Switch to **Custom Headers Bearer** (section 5.4); this demo's gateway doesn't publish OAuth discovery metadata. See section 6 |
-| `curl` with Bearer works but Inspector returns "auth failed" | Inspector is using the OAuth tab despite the Bearer being set | In the Inspector UI use the **Custom Headers** input, not the OAuth tab; clear cached auth state and reconnect |
-| Inspector shows `500 Internal Server Error` while trying to connect | Almost never AgentGateway itself — it returns 302 (no auth) or 404 (no matching route), not 500. The 500 is usually Inspector's local **proxy server** (port 6277) failing to follow an OAuth redirect to an unreachable issuer host, OR a downstream MCP server crashing on a malformed payload. | (1) Confirm the 5xx isn't AGW: `curl -i http://${AGW_LB}/mcp -H "Authorization: Bearer ${TOKEN}"` — should be 200/204/202. (2) If that's clean, check Inspector's proxy log in the terminal where you ran `npx`. (3) Check the AGW data plane log for any 5xx: `kubectl --context=cluster1-singtel -n agentgateway-system logs deploy/agentgateway-hub --tail=50 \| grep -iE "5[0-9]{2}\|error"` |
-| JWT works from jumphost, fails from laptop with the **same** token | Token pasted with extra whitespace, or quietly expired between hops | Re-acquire on the laptop in the same shell you'll run Inspector from; verify with `echo $TOKEN \| cut -d. -f2 \| base64 -d \| jq .exp` |
+| `connection refused` to `localhost:5556` | `portforward.sh` not running or Dex port-forward died (only relevant for the jumphost scenario; laptops no longer need to port-forward Dex — section 5.2 uses the LB directly) | Start a new terminal: `./demo/portforward.sh` |
+| Inspector connects but immediately shows `Unexpected content type: text/html; charset=utf-8` | The URL field is missing `/mcp` — Inspector hit the gateway root, which returned an HTML 404 / Dex login page | Set URL to `http://<agw-lb>/mcp` (with the path), not `http://<agw-lb>` |
+| Inspector's "OAuth" tab fails with `Unregistered redirect_uri` | The current AGW LB hostname isn't in Dex's `staticClients[*].redirectURIs` (happens after a fresh LB provisioning when `AGW_LB` wasn't set at `03-dex.sh` time) | Re-run `05-extauth.sh` — it patches the Dex configmap with the current LB. Or manually update the configmap and `rollout restart deployment/dex -n dex` |
+| Inspector shows `500 Internal Server Error` while trying to connect | Almost never AgentGateway itself — it returns 302 (no auth) or 404 (no matching route), not 500. The 500 is usually Inspector's local **proxy server** (port 6277) failing to follow a redirect, OR a downstream MCP server crashing on a malformed payload. | (1) Confirm the 5xx isn't AGW: `curl -i http://${AGW_LB}/mcp -H "Authorization: Bearer ${TOKEN}"` — should be 200/204/202. (2) If clean, check Inspector's proxy log in the terminal where you ran `npx`. (3) See [`troubleshooting-agw.md`](troubleshooting-agw.md) for the response-flags-based AGW 5xx walkthrough |
+| JWT works in `curl` but Inspector returns `auth failed` | The `Bearer ` prefix was double-prepended (Inspector has both a "Bearer Token" field that prepends, and a Custom Headers field where you'd add it manually — using both gives `Bearer Bearer eyJ...`) | Use **one** of the two: either the Bearer Token field with just the raw token, or Custom Headers with the full `Bearer eyJ...` string |
+| JWT works from jumphost, fails from laptop with the **same** token | Token pasted with extra whitespace, or quietly expired between hops | Re-acquire on the laptop in the same shell you'll run Inspector from; verify with `python3 -c "import sys,base64,json; s='$TOKEN'.split('.')[1]; s+='='*(-len(s)%4); print(json.loads(base64.urlsafe_b64decode(s))['exp'])"` |
 
 ---
 

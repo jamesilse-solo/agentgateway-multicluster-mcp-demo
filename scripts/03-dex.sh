@@ -8,7 +8,11 @@ set -euo pipefail
 # + Service). Configures:
 #   - OIDC client: agw-client (for AgentGateway ExtAuth)
 #   - Static user: demo@example.com / demo-pass
-#   - Issuer: http://dex.dex.svc.cluster.local:5556/dex
+#   - Issuer: in-cluster FQDN by default; 05-extauth.sh patches this to
+#     http://<agw-lb>/dex once the AGW LoadBalancer is provisioned.
+#     The external issuer is required so MCP clients on a laptop can
+#     complete the OAuth authorization-code flow without resolving the
+#     cluster FQDN.
 #
 # Dex handles both:
 #   - Browser login flow (auth code → redirect → session)
@@ -28,9 +32,16 @@ DEX_CLIENT_SECRET="${DEX_CLIENT_SECRET:-agw-client-secret}"
 DEX_USER_EMAIL="${DEX_USER_EMAIL:-demo@example.com}"
 DEX_USER_PASSWORD="${DEX_USER_PASSWORD:-demo-pass}"
 DEX_USER_NAME="${DEX_USER_NAME:-demo-user}"
-AGW_LB="${AGW_LB:-}"  # Optional: LB address for redirect URI
+AGW_LB="${AGW_LB:-}"  # Optional: LB address for redirect URI + external issuer
 
-DEX_ISSUER="http://dex.${DEX_NAMESPACE}.svc.cluster.local:5556/dex"
+# Dex issuer: if AGW_LB is known at this point (re-run scenario), bake the
+# external URL into the configmap directly. Otherwise default to the in-cluster
+# FQDN — 05-extauth.sh will patch it to the AGW LB once provisioned.
+if [[ -n "${AGW_LB}" ]]; then
+  DEX_ISSUER="http://${AGW_LB}/dex"
+else
+  DEX_ISSUER="http://dex.${DEX_NAMESPACE}.svc.cluster.local:5556/dex"
+fi
 
 KC="kubectl --context ${KUBE_CONTEXT}"
 log() { echo ""; echo "=== $1 ==="; }

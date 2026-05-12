@@ -34,12 +34,20 @@ DEX_CLIENT_SECRET="${DEX_CLIENT_SECRET:-agw-client-secret}"
 AGW_HELM_REPO="${AGW_HELM_REPO:-us-docker.pkg.dev/solo-public/enterprise-agentgateway/charts}"
 AGW_VERSION="${AGW_VERSION:-v2.3.0-rc.3}"
 
-# Dex internal service URL
-DEX_ISSUER_URL="http://dex.${DEX_NAMESPACE}.svc.cluster.local:5556/dex/"
-
-# Get AGW LB address
+# Get AGW LB address (required — must exist before this script runs)
 AGW_LB=$(kubectl --context "${KUBE_CONTEXT}" -n "${AGW_NAMESPACE}" get svc agentgateway-hub \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+if [[ -z "${AGW_LB}" ]]; then
+  echo "ERROR: agentgateway-hub LoadBalancer address not yet provisioned. Wait for 04a to complete and retry."
+  exit 1
+fi
+
+# Dex must be reachable from external MCP clients (laptops, IDEs) for the
+# OAuth authorization-code flow to complete. We expose /dex/* through the
+# AGW Hub LB and pin both the Dex `issuer` and the ExtAuth `issuerUrl` to
+# the same external URL so JWT `iss` claims match.
+DEX_ISSUER_EXTERNAL="http://${AGW_LB}/dex"
+DEX_ISSUER_URL="${DEX_ISSUER_EXTERNAL}/"
 DEMO_APP_URL="${DEMO_APP_URL:-http://${AGW_LB}}"
 
 # ─── Helper ───────────────────────────────────────────────────────────────────
@@ -75,7 +83,13 @@ stringData:
 EOF
 
 ###############################################################################
-# 3. Create AgentgatewayBackend for Dex
+# 3. Create AgentgatewayBackend + HTTPRoute that expose Dex via the AGW LB
+#
+# Dex was deployed in 03-dex.sh with an in-cluster ClusterIP. For external
+# MCP clients to complete the OAuth authorization-code flow (auth → consent
+# → callback → token exchange), every URL Dex emits must be reachable from
+# outside the cluster. We achieve this by routing /dex/* through the AGW
+# Hub LoadBalancer to the Dex Service.
 ###############################################################################
 log "Creating AgentgatewayBackend for Dex"
 ${KC} apply -n "${AGW_NAMESPACE}" -f - <<EOF
@@ -89,6 +103,48 @@ spec:
     host: dex.${DEX_NAMESPACE}.svc.cluster.local
     port: 5556
 EOF
+
+log "Creating HTTPRoute /dex/* → dex-backend (no ExtAuth — Dex auth flow itself)"
+${KC} apply -n "${AGW_NAMESPACE}" -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: dex-route
+  namespace: ${AGW_NAMESPACE}
+spec:
+  parentRefs:
+  - name: agentgateway-hub
+    namespace: ${AGW_NAMESPACE}
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /dex
+    backendRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: dex-backend
+      namespace: ${AGW_NAMESPACE}
+EOF
+
+###############################################################################
+# 3a. Patch Dex configmap so its `issuer` matches the external URL
+#
+# Dex was originally deployed with the in-cluster FQDN. JWTs Dex issues
+# embed the `iss` claim verbatim — for ExtAuth's OIDC validation to succeed,
+# the token's iss MUST equal the AuthConfig's issuerUrl. We patch the
+# configmap and roll Dex once.
+###############################################################################
+log "Patching Dex configmap to use external issuer: ${DEX_ISSUER_EXTERNAL}"
+CURRENT_CONFIG=$(${KC} -n "${DEX_NAMESPACE}" get configmap dex-config \
+  -o jsonpath='{.data.config\.yaml}')
+NEW_CONFIG=$(echo "${CURRENT_CONFIG}" \
+  | sed -E "s|^issuer:.*|issuer: ${DEX_ISSUER_EXTERNAL}|")
+${KC} -n "${DEX_NAMESPACE}" create configmap dex-config \
+  --from-literal=config.yaml="${NEW_CONFIG}" \
+  --dry-run=client -o yaml | ${KC} apply -f -
+${KC} -n "${DEX_NAMESPACE}" rollout restart deployment/dex
+${KC} -n "${DEX_NAMESPACE}" rollout status deployment/dex --timeout=120s
 
 ###############################################################################
 # 4. Create AuthConfig (OIDC authorization code flow via Dex)
@@ -138,9 +194,15 @@ for i in $(seq 1 30); do
 done
 
 ###############################################################################
-# 5. Attach AuthConfig to agentgateway-hub Gateway
+# 5. Attach AuthConfig to MCP/UI HTTPRoutes (NOT Gateway-wide)
+#
+# We cannot target the whole Gateway because /dex/* must remain
+# unauthenticated — otherwise the OAuth login redirect would itself require
+# a valid session. Instead we enumerate the protected routes by name.
+# Routes created in later scripts (06, 08, 09) attach to this policy
+# automatically once they exist.
 ###############################################################################
-log "Attaching AuthConfig to agentgateway-hub via EnterpriseAgentgatewayPolicy"
+log "Attaching AuthConfig to MCP/UI HTTPRoutes (dex-route excluded)"
 ${KC} apply -n "${AGW_NAMESPACE}" -f - <<EOF
 apiVersion: enterpriseagentgateway.solo.io/v1alpha1
 kind: EnterpriseAgentgatewayPolicy
@@ -150,8 +212,20 @@ metadata:
 spec:
   targetRefs:
   - group: gateway.networking.k8s.io
-    kind: Gateway
-    name: agentgateway-hub
+    kind: HTTPRoute
+    name: mcp-route
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: mcp-route-remote
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: areg-mcp-route
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: gloo-mesh-ui-route
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: search-solo-io-route
   traffic:
     entExtAuth:
       authConfigRef:
@@ -171,23 +245,24 @@ log "ExtAuth configuration complete"
 echo ""
 echo "=== DEMO FLOWS ==="
 echo ""
-echo "Port-forward Dex locally:"
-echo "  ${KC} -n ${DEX_NAMESPACE} port-forward svc/dex 5556:5556 &"
+echo "Dex is reachable from your laptop directly through the AGW LB at:"
+echo "  http://${AGW_LB}/dex/.well-known/openid-configuration"
+echo "  (no port-forward needed — /dex/* is routed via dex-route HTTPRoute)"
 echo ""
 echo "--- Flow 1: Browser Login (auth code flow) ---"
 echo "  Open in browser: http://${AGW_LB}/mcp"
-echo "  → Redirected to Dex login at http://localhost:5556/dex/auth?..."
+echo "  → Redirected to Dex login at http://${AGW_LB}/dex/auth?..."
 echo "  → Login with: demo@example.com / demo-pass"
 echo "  → Redirected back to /callback → session established"
 echo "  → MCP tools accessible"
 echo ""
 echo "--- Flow 2: MCP Client Token (password grant / Bearer) ---"
-echo "  # 1. Get token from Dex (must port-forward Dex or use in-cluster curl)"
-echo "  TOKEN=\$(curl -s -X POST 'http://localhost:5556/dex/token' \\"
+echo "  # 1. Get token from Dex through the AGW LB (no port-forward needed)"
+echo "  TOKEN=\$(curl -s -X POST 'http://${AGW_LB}/dex/token' \\"
 echo "    -H 'Content-Type: application/x-www-form-urlencoded' \\"
 echo "    -d 'grant_type=password&username=demo@example.com&password=demo-pass' \\"
 echo "    -d 'client_id=${DEX_CLIENT_ID}&client_secret=${DEX_CLIENT_SECRET}&scope=openid+email+profile' \\"
-echo "    | jq -r '.access_token')"
+echo "    | jq -r '.id_token')"
 echo ""
 echo "  # 2. Unauthenticated → 302 redirect to Dex:"
 echo "  curl -s -o /dev/null -w '%{http_code}\n' http://${AGW_LB}/mcp"

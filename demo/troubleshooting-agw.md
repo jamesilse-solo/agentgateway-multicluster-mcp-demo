@@ -6,7 +6,7 @@ When MCP Inspector (or any MCP client) talks to AgentGateway and gets back a `50
 
 That JSON-RPC error code (`-32099`) is the client wrapping a real HTTP 5xx from upstream. **AgentGateway itself is returning the 500** — not Inspector's internal proxy. The cause is almost always one of four things; this doc walks through diagnosing each.
 
-> **Audience**: someone newer to Kubernetes. Every command is copy-paste; expected outputs are shown. Replace `<CTX>` with your kubectl context name (e.g. `cluster1-singtel`). Find yours with `kubectl config get-contexts`.
+> **Audience**: someone newer to Kubernetes. Every command is copy-paste; expected outputs are shown. Replace `<CTX>` with your kubectl context name (e.g. `cluster1`). Find yours with `kubectl config get-contexts`.
 
 ---
 
@@ -14,7 +14,7 @@ That JSON-RPC error code (`-32099`) is the client wrapping a real HTTP 5xx from 
 
 | Term | What it means here |
 |------|--------------------|
-| **kubectl context** | A named pointer to a specific Kubernetes cluster. `kubectl --context=cluster1-singtel ...` runs the command against that cluster. |
+| **kubectl context** | A named pointer to a specific Kubernetes cluster. `kubectl --context=cluster1 ...` runs the command against that cluster. |
 | **pod** | One running container (or group of containers). AGW, ExtAuth, Redis (`ext-cache`) each run as one or more pods. |
 | **deployment** | A controller that keeps a desired number of pods running. `deploy/agentgateway-hub` is the AGW data-plane deployment. |
 | **access log** | A per-request log line AGW writes for every HTTP request it serves. Includes status code, path, latency, and `response_flags`. |
@@ -227,9 +227,11 @@ If Step 0's `curl` returned a clean 200 but MCP Inspector still fails, the gatew
 
 | Inspector behaviour | Fix |
 |---|---|
-| Using the "OAuth" tab instead of "Custom Headers" | Switch to **Authentication → Custom Headers**; add a header named `Authorization` with value `Bearer <your-token>`. Do not use the OAuth tab — see `mcp-inspector.md` section 6. |
-| Bearer token expired between login and click | Re-acquire the token in the same shell that's running `npx @modelcontextprotocol/inspector`; tokens default to short lifetimes. |
-| Browser cached an old auth state | Click "Disconnect" in the Inspector UI, refresh the browser tab, paste the token again, reconnect. |
+| `Unexpected content type: text/html; charset=utf-8` | URL field is missing `/mcp`. Set it to `http://<agw-lb>/mcp`, not `http://<agw-lb>`. |
+| `Unregistered redirect_uri ('http://<agw-lb>/callback')` on the OAuth tab | Dex's `staticClients` redirectURIs list doesn't include the current LB hostname. Re-run `scripts/05-extauth.sh` (it patches the Dex configmap with whatever LB is live) or manually edit `configmap/dex-config` and `kubectl rollout restart deployment/dex -n dex`. |
+| Bearer token expired between login and click | Re-acquire the token in the same shell that's running `npx @modelcontextprotocol/inspector`; Dex tokens default to short lifetimes. |
+| Browser cached an old auth state (esp. after switching tabs between OAuth ↔ Custom Headers) | Click "Disconnect" in the Inspector UI, refresh the browser tab, paste the token again (or restart the OAuth flow), reconnect. |
+| Either Inspector tab works in `curl` but Inspector still errors out | Make sure you're picking **Connection Type: via proxy** in Inspector — direct-connect mode has stricter content-type handling. |
 
 ---
 
