@@ -66,7 +66,7 @@ run()    { echo -e "  ${C}\$ $*${N}"; }
 # ─── Cleanup path (--cleanup) ─────────────────────────────────────────────────
 if [[ "${1:-}" == "--cleanup" ]]; then
   banner "Removing example resources"
-  ${KC1} -n "${AGW_NAMESPACE}" delete httproute mcp-route-peer --ignore-not-found
+  ${KC1} -n "${AGW_NAMESPACE}" delete httproute mcp-peer-agw-route --ignore-not-found
   ${KC1} -n "${AGW_NAMESPACE}" delete agentgatewaybackend mcp-peer-agw --ignore-not-found
   ${KC2} -n "${AGW_NAMESPACE}" label service "${PEER_GATEWAY_NAME}" \
     solo.io/service-scope- --overwrite 2>/dev/null || true
@@ -151,7 +151,7 @@ run "kubectl --context ${CLUSTER1_CONTEXT} apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: mcp-route-peer
+  name: mcp-peer-agw-route
   namespace: ${AGW_NAMESPACE}
 spec:
   parentRefs:
@@ -172,7 +172,7 @@ ${KC1} apply -n "${AGW_NAMESPACE}" -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: mcp-route-peer
+  name: mcp-peer-agw-route
   namespace: ${AGW_NAMESPACE}
 spec:
   parentRefs:
@@ -195,23 +195,23 @@ ok "HTTPRoute '${PEER_PATH}' wired to the peer-AGW backend"
 # Step 4 — Give the new route the same authentication as the others
 #
 # The POC protects MCP routes with an OIDC policy that targets
-# specific HTTPRoutes by name. We add 'mcp-route-peer' to that list so
+# specific HTTPRoutes by name. We add 'mcp-peer-agw-route' to that list so
 # unauthenticated calls to /mcp/peer get the same 302-to-Dex treatment
 # as /mcp.
 ###############################################################################
 banner "Step 4 — Add /mcp/peer to the OIDC ExtAuth policy"
 note "We patch the existing oidc-extauth policy (created by 05-extauth.sh)"
-note "and add mcp-route-peer to its target list."
+note "and add mcp-peer-agw-route to its target list."
 
 # Read the current policy, append the new target if not already present.
 CURRENT=$(${KC1} -n "${AGW_NAMESPACE}" get enterpriseagentgatewaypolicy oidc-extauth \
   -o jsonpath='{.spec.targetRefs}')
-if echo "${CURRENT}" | grep -q 'mcp-route-peer'; then
-  ok "Policy already targets mcp-route-peer — nothing to do"
+if echo "${CURRENT}" | grep -q 'mcp-peer-agw-route'; then
+  ok "Policy already targets mcp-peer-agw-route — nothing to do"
 else
   ${KC1} -n "${AGW_NAMESPACE}" patch enterpriseagentgatewaypolicy oidc-extauth \
     --type=json \
-    -p='[{"op":"add","path":"/spec/targetRefs/-","value":{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"mcp-route-peer"}}]'
+    -p='[{"op":"add","path":"/spec/targetRefs/-","value":{"group":"gateway.networking.k8s.io","kind":"HTTPRoute","name":"mcp-peer-agw-route"}}]'
   ok "Policy updated"
 fi
 
