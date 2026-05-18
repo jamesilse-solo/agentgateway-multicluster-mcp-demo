@@ -160,17 +160,39 @@
   .card .mono-tag.green { color: var(--green); background: rgba(31,238,179,0.12); }
 
   /* Bullet list style */
-  .bullet-list { list-style: none; display: flex; flex-direction: column; gap: 0.8rem; }
+  .bullet-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 1.15rem;
+  }
   .bullet-list li {
-    display: flex; align-items: flex-start; gap: 0.75rem;
-    font-size: 0.95rem; color: var(--text-body); line-height: 1.5;
+    position: relative;
+    padding-left: 1.5rem;
+    font-size: 0.95rem;
+    color: var(--text-body);
+    line-height: 1.7;
   }
   .bullet-list li::before {
-    content: ''; display: block; flex-shrink: 0;
-    width: 6px; height: 6px; border-radius: 50%;
-    background: var(--purple); margin-top: 0.45rem;
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0.65rem;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--purple);
   }
   .bullet-list li strong { color: var(--text); font-weight: 600; }
+
+  /* Inline code: subtle pill so colored snippets sit in the line cleanly */
+  .slide code {
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    background: rgba(204, 133, 255, 0.08);
+    white-space: nowrap;
+  }
+  .bullet-list code { font-size: 0.85em; }
 
   /* Title slide specific */
   .title-hero {
@@ -217,11 +239,11 @@
 
   /* two-col layout */
   .two-col {
-    flex: 1; display: grid; grid-template-columns: 1fr 1fr;
-    gap: 2rem; align-items: start; min-height: 0;
+    flex: 1; display: grid; grid-template-columns: 1.1fr 1fr;
+    gap: 2.5rem; align-items: start; min-height: 0;
   }
-  .two-col-left { display: flex; flex-direction: column; gap: 1rem; }
-  .two-col-right { display: flex; flex-direction: column; gap: 0.75rem; }
+  .two-col-left { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+  .two-col-right { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; }
 
   /* code label */
   .code-label {
