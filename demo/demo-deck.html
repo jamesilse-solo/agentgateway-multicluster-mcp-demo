@@ -160,17 +160,39 @@
   .card .mono-tag.green { color: var(--green); background: rgba(31,238,179,0.12); }
 
   /* Bullet list style */
-  .bullet-list { list-style: none; display: flex; flex-direction: column; gap: 0.8rem; }
+  .bullet-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 1.15rem;
+  }
   .bullet-list li {
-    display: flex; align-items: flex-start; gap: 0.75rem;
-    font-size: 0.95rem; color: var(--text-body); line-height: 1.5;
+    position: relative;
+    padding-left: 1.5rem;
+    font-size: 0.95rem;
+    color: var(--text-body);
+    line-height: 1.7;
   }
   .bullet-list li::before {
-    content: ''; display: block; flex-shrink: 0;
-    width: 6px; height: 6px; border-radius: 50%;
-    background: var(--purple); margin-top: 0.45rem;
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0.65rem;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--purple);
   }
   .bullet-list li strong { color: var(--text); font-weight: 600; }
+
+  /* Inline code: subtle pill so colored snippets sit in the line cleanly */
+  .slide code {
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    background: rgba(204, 133, 255, 0.08);
+    white-space: nowrap;
+  }
+  .bullet-list code { font-size: 0.85em; }
 
   /* Title slide specific */
   .title-hero {
@@ -217,11 +239,11 @@
 
   /* two-col layout */
   .two-col {
-    flex: 1; display: grid; grid-template-columns: 1fr 1fr;
-    gap: 2rem; align-items: start; min-height: 0;
+    flex: 1; display: grid; grid-template-columns: 1.1fr 1fr;
+    gap: 2.5rem; align-items: start; min-height: 0;
   }
-  .two-col-left { display: flex; flex-direction: column; gap: 1rem; }
-  .two-col-right { display: flex; flex-direction: column; gap: 0.75rem; }
+  .two-col-left { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+  .two-col-right { display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; }
 
   /* code label */
   .code-label {
@@ -879,13 +901,116 @@ spec:
   </div>
 
   <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- SLIDE 9 — AGW-TO-AGW FEDERATION                          -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div class="slide" id="slide-9-agw-to-agw">
+    <div class="topbar">
+      <span class="wordmark">Solo.io</span>
+      <span class="topbar-tag">MULTI-GATEWAY FEDERATION</span>
+    </div>
+    <div class="slide-body">
+      <div class="overline">AgentGateway-to-AgentGateway Chaining</div>
+      <h2 class="section-title">Each cluster keeps its own policy. <span>Even on forwarded calls.</span></h2>
+      <p class="section-sub">A second federation pattern: instead of routing through to a remote pod directly, Cluster 1's AgentGateway forwards the call to <strong>Cluster 2's AgentGateway</strong>. From the agent's view there is still only one gateway. But Cluster 2's policies — auth, rate limits, tool RBAC — also enforce on every forwarded call.</p>
+
+      <div class="two-col" style="margin-top:1.25rem;grid-template-columns:1fr 1.4fr;">
+        <div class="two-col-left">
+          <ul class="bullet-list">
+            <li><strong>The peer gateway is just another MCP upstream</strong> — Cluster 2's AGW Service is declared in an <code style="font-family:DM Mono,monospace;font-size:0.85em;color:#20B7F3">AgentgatewayBackend</code> with a <code style="font-family:DM Mono,monospace;font-size:0.85em">static</code> target. Same CRD pattern as a SaaS endpoint or a local tool</li>
+            <li><strong>Two policy boundaries, not one</strong> — Cluster 1's AGW validates the caller; Cluster 2's AGW validates the forwarded request against its own rules. Each team owns its own enforcement</li>
+            <li><strong>Path: <code style="font-family:DM Mono,monospace;font-size:0.85em;color:#CC85FF">/mcp/peer</code></strong> on Cluster 1's LB → forwarded to Cluster 2's <code style="font-family:DM Mono,monospace;font-size:0.85em">/mcp</code>. Different path on Cluster 1 prevents loops if the chain is bidirectional</li>
+            <li><strong>Symmetric and stackable</strong> — Cluster 2 can do the same to Cluster 1. Add a Cluster 3, and Cluster 1 just gets one more upstream entry</li>
+            <li><strong>Versus <code style="font-family:DM Mono,monospace;font-size:0.85em">/mcp/remote</code></strong> — that direct-to-pod path bypasses Cluster 2's gateway. Use that when one team owns both clusters. Use <code style="font-family:DM Mono,monospace;font-size:0.85em">/mcp/peer</code> when the clusters have different owners or compliance scopes</li>
+          </ul>
+        </div>
+        <div class="two-col-right">
+          <!-- Wireframe: Agent → AGW1 → AGW2 → tool -->
+          <svg viewBox="0 0 380 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-height:510px;">
+            <defs>
+              <marker id="m9a" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+                <path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#8023C3" stroke-width="1.2"/>
+              </marker>
+              <marker id="m9b" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+                <path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#20B7F3" stroke-width="1.2"/>
+              </marker>
+              <marker id="m9c" markerWidth="7" markerHeight="5" refX="7" refY="2.5" orient="auto">
+                <path d="M0,0 L7,2.5 L0,5" fill="none" stroke="#1FEEB3" stroke-width="1.2"/>
+              </marker>
+            </defs>
+
+            <!-- AI Agent (external caller, left) -->
+            <rect x="6" y="110" width="64" height="46" rx="6"
+              fill="rgba(128,35,195,0.18)" stroke="#8023C3" stroke-width="1.4"/>
+            <text x="38" y="130" text-anchor="middle" font-family="Figtree" font-weight="600" font-size="9.5" fill="white">AI Agent</text>
+            <text x="38" y="144" text-anchor="middle" font-family="DM Mono" font-size="6.5" fill="#CC85FF">external caller</text>
+
+            <!-- Cluster 1 boundary -->
+            <rect x="86" y="40" width="125" height="200" rx="8"
+              fill="none" stroke="rgba(128,35,195,0.35)" stroke-width="1.1" stroke-dasharray="3,3"/>
+            <text x="148" y="54" text-anchor="middle" font-family="DM Mono" font-size="7" fill="rgba(204,133,255,0.7)">CLUSTER 1</text>
+
+            <!-- AGW Hub (Cluster 1) -->
+            <rect x="100" y="100" width="98" height="66" rx="6"
+              fill="rgba(128,35,195,0.25)" stroke="#8023C3" stroke-width="1.5"/>
+            <text x="149" y="119" text-anchor="middle" font-family="Figtree" font-weight="600" font-size="10" fill="white">AgentGateway</text>
+            <text x="149" y="131" text-anchor="middle" font-family="Figtree" font-weight="600" font-size="9.5" fill="white">Hub</text>
+            <text x="149" y="146" text-anchor="middle" font-family="DM Mono" font-size="6.5" fill="#CC85FF">ExtAuth · traces</text>
+            <text x="149" y="158" text-anchor="middle" font-family="DM Mono" font-size="6.5" fill="#CC85FF">HTTPRoute /mcp/peer</text>
+
+            <!-- Cluster 2 boundary -->
+            <rect x="225" y="40" width="150" height="200" rx="8"
+              fill="none" stroke="rgba(32,183,243,0.35)" stroke-width="1.1" stroke-dasharray="3,3"/>
+            <text x="300" y="54" text-anchor="middle" font-family="DM Mono" font-size="7" fill="rgba(32,183,243,0.7)">CLUSTER 2</text>
+
+            <!-- AGW Spoke (Cluster 2) -->
+            <rect x="237" y="100" width="98" height="66" rx="6"
+              fill="rgba(32,183,243,0.20)" stroke="#20B7F3" stroke-width="1.5"/>
+            <text x="286" y="119" text-anchor="middle" font-family="Figtree" font-weight="600" font-size="10" fill="white">AgentGateway</text>
+            <text x="286" y="131" text-anchor="middle" font-family="Figtree" font-weight="600" font-size="9.5" fill="white">Spoke</text>
+            <text x="286" y="146" text-anchor="middle" font-family="DM Mono" font-size="6.5" fill="#20B7F3">own policy</text>
+            <text x="286" y="158" text-anchor="middle" font-family="DM Mono" font-size="6.5" fill="#20B7F3">HTTPRoute /mcp</text>
+
+            <!-- MCP server on Cluster 2 -->
+            <rect x="343" y="108" width="32" height="50" rx="4"
+              fill="rgba(31,238,179,0.15)" stroke="#1FEEB3" stroke-width="1.3"/>
+            <text x="359" y="125" text-anchor="middle" font-family="Figtree" font-weight="600" font-size="8" fill="white">MCP</text>
+            <text x="359" y="137" text-anchor="middle" font-family="Figtree" font-weight="600" font-size="8" fill="white">Tool</text>
+            <text x="359" y="150" text-anchor="middle" font-family="DM Mono" font-size="6" fill="#1FEEB3">pod</text>
+
+            <!-- Agent → AGW Hub -->
+            <line x1="70" y1="133" x2="100" y2="133" stroke="#8023C3" stroke-width="1.5" marker-end="url(#m9a)"/>
+            <rect x="56" y="86" width="58" height="14" rx="3" fill="#151927"/>
+            <text x="85" y="96" text-anchor="middle" font-family="DM Mono" font-size="6.8" fill="#CC85FF">/mcp/peer</text>
+            <rect x="56" y="170" width="58" height="14" rx="3" fill="#151927"/>
+            <text x="85" y="180" text-anchor="middle" font-family="DM Mono" font-size="6.8" fill="#CC85FF">Bearer JWT</text>
+
+            <!-- AGW Hub → AGW Spoke (the chaining arrow) -->
+            <line x1="198" y1="133" x2="237" y2="133" stroke="#20B7F3" stroke-width="1.8" marker-end="url(#m9b)"/>
+            <rect x="194" y="86" width="46" height="14" rx="3" fill="#151927"/>
+            <text x="217" y="96" text-anchor="middle" font-family="DM Mono" font-size="6.8" fill="#20B7F3">forward</text>
+            <rect x="186" y="170" width="64" height="14" rx="3" fill="#151927"/>
+            <text x="218" y="180" text-anchor="middle" font-family="DM Mono" font-size="6.8" fill="#20B7F3">static target</text>
+
+            <!-- AGW Spoke → MCP Tool -->
+            <line x1="335" y1="133" x2="343" y2="133" stroke="#1FEEB3" stroke-width="1.5" marker-end="url(#m9c)"/>
+
+            <!-- Footer: resources used -->
+            <text x="14" y="262" font-family="DM Mono" font-size="6.5" fill="#5C6178">Cluster 1: AgentgatewayBackend(static → cluster2-spoke) + HTTPRoute /mcp/peer + ExtAuth</text>
+            <text x="14" y="273" font-family="DM Mono" font-size="6.5" fill="#5C6178">Cluster 2: unchanged — its own /mcp route handles the call like any other client</text>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
 </div><!-- /deck -->
 
 <!-- ── Navigation ── -->
 <nav class="slide-nav" id="slideNav">
   <button id="prevBtn" onclick="changeSlide(-1)" disabled>&#8592;</button>
   <div style="display:flex;gap:0.5rem;align-items:center;" id="dotContainer"></div>
-  <span class="slide-counter" id="counter">1 / 8</span>
+  <span class="slide-counter" id="counter">1 / 9</span>
   <button id="nextBtn" onclick="changeSlide(1)">&#8594;</button>
 </nav>
 
