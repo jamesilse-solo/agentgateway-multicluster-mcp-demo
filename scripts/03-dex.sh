@@ -47,20 +47,34 @@ KC="kubectl --context ${KUBE_CONTEXT}"
 log() { echo ""; echo "=== $1 ==="; }
 
 ###############################################################################
-# 1. Generate bcrypt hash for the demo user password
+# 1. Generate bcrypt hashes for the demo + tenant users
+#
+# The demo user is the generic "logged-in agent" used by send-traffic.sh.
+# The two tenant users (tenant-a-agent / tenant-b-agent) back the
+# multi-tenancy example (examples/02-multi-tenancy.*). Each tenant has a
+# distinct email so per-tenant rate-limit counters in 05b-multi-tenancy.sh
+# can key off x-user-token.
 ###############################################################################
-log "Generating bcrypt password hash for ${DEX_USER_NAME}"
-if command -v python3 &>/dev/null && python3 -c "import bcrypt" 2>/dev/null; then
-  PASSWORD_HASH=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'${DEX_USER_PASSWORD}', bcrypt.gensalt(rounds=10)).decode())")
-elif command -v htpasswd &>/dev/null; then
-  # -B = bcrypt, -C 10 = cost 10 (Dex requires cost >= 10; htpasswd -B alone defaults to cost 5)
-  PASSWORD_HASH=$(htpasswd -iBC 10 -n x <<< "${DEX_USER_PASSWORD}" | cut -d: -f2)
-else
-  # Pre-computed bcrypt hash for "demo-pass" (cost 10)
+hash_password() {
+  # $1 = plaintext password
+  if command -v python3 &>/dev/null && python3 -c "import bcrypt" 2>/dev/null; then
+    python3 -c "import bcrypt; print(bcrypt.hashpw(b'$1', bcrypt.gensalt(rounds=10)).decode())"
+  elif command -v htpasswd &>/dev/null; then
+    # -B = bcrypt, -C 10 = cost 10 (Dex requires cost >= 10)
+    htpasswd -iBC 10 -n x <<< "$1" | cut -d: -f2
+  else
+    return 1
+  fi
+}
+
+log "Generating bcrypt password hashes"
+PASSWORD_HASH=$(hash_password "${DEX_USER_PASSWORD}" 2>/dev/null) || {
   PASSWORD_HASH='$2b$10$SYAvnXXmpfp1.if/JXodKOPG7vCZW7CMvDSzK2LLkbw5G4S5/oIli'
   echo "  (using pre-computed hash — valid only if DEX_USER_PASSWORD=demo-pass)"
-fi
-echo "  Hash computed"
+}
+TENANT_A_HASH=$(hash_password "tenant-a-pass" 2>/dev/null) || TENANT_A_HASH="${PASSWORD_HASH}"
+TENANT_B_HASH=$(hash_password "tenant-b-pass" 2>/dev/null) || TENANT_B_HASH="${PASSWORD_HASH}"
+echo "  Hashes computed (demo + 2 tenant users)"
 
 ###############################################################################
 # 2. Create namespace + ambient label
@@ -115,6 +129,14 @@ data:
       hash: '${PASSWORD_HASH}'
       username: "${DEX_USER_NAME}"
       userID: "demo-user-001"
+    - email: "tenant-a-agent@example.com"
+      hash: '${TENANT_A_HASH}'
+      username: "tenant-a-agent"
+      userID: "tenant-a-001"
+    - email: "tenant-b-agent@example.com"
+      hash: '${TENANT_B_HASH}'
+      username: "tenant-b-agent"
+      userID: "tenant-b-001"
 EOF
 
 log "Applying Dex Deployment"
