@@ -62,77 +62,61 @@ CURRENT=$(${KC} -n "${DEX_NAMESPACE}" get configmap dex-config \
 if echo "${CURRENT}" | grep -q "id: ${SERVICE_CLIENT_ID}"; then
   echo "  ${SERVICE_CLIENT_ID} client already present — skipping configmap patch"
 else
-  # Append a new staticClients entry. We use awk to insert after the existing
-  # staticClients block — the new client follows the same indentation.
-  NEW_CLIENT_YAML="    - id: ${SERVICE_CLIENT_ID}
-      name: \"OAuth 2.1 MCP Service Client (client-credentials)\"
-      secret: \"${SERVICE_CLIENT_SECRET}\"
-      grantTypes:
-      - client_credentials
-      redirectURIs:
-      - http://localhost/callback"
-  NEW_CONFIG=$(echo "${CURRENT}" | awk -v add="${NEW_CLIENT_YAML}" '
-    /^    staticClients:/ { in_clients=1; print; next }
-    in_clients && /^    [a-zA-Z]/ { print add; in_clients=0 }
-    { print }
-    END { if (in_clients) print add }
-  ')
+  export CID="${SERVICE_CLIENT_ID}"
+  export CSEC="${SERVICE_CLIENT_SECRET}"
+  NEW_CONFIG=$(echo "${CURRENT}" | python3 -c '
+import sys, os
+config = sys.stdin.read()
+cid = os.environ["CID"]
+csec = os.environ["CSEC"]
+new_client = f"""- id: {cid}
+  name: "OAuth 2.1 MCP Service Client (client-credentials)"
+  secret: "{csec}"
+  grantTypes:
+  - client_credentials
+  redirectURIs:
+  - http://localhost/callback"""
+out = []
+for line in config.splitlines():
+    out.append(line)
+    if line.strip() == "staticClients:":
+        out.append(new_client)
+print("\n".join(out))
+')
+  unset CID CSEC
   ${KC} -n "${DEX_NAMESPACE}" create configmap dex-config \
     --from-literal=config.yaml="${NEW_CONFIG}" \
     --dry-run=client -o yaml | ${KC} apply -f -
   ${KC} -n "${DEX_NAMESPACE}" rollout restart deployment/dex
   ${KC} -n "${DEX_NAMESPACE}" rollout status deployment/dex --timeout=120s
+
+  # ExtAuth caches Dex's JWKS / discovery doc. Rolling Dex without
+  # rolling ExtAuth leaves stale state that causes /mcp Bearer auth
+  # to 302-redirect instead of accept. Roll ExtAuth too.
+  log "Rolling ExtAuth so its Dex client cache is fresh"
+  ${KC} -n "${AGW_NAMESPACE}" rollout restart deploy/ext-auth-service-enterprise-agentgateway
+  ${KC} -n "${AGW_NAMESPACE}" rollout status deploy/ext-auth-service-enterprise-agentgateway --timeout=120s
 fi
 
 ###############################################################################
-# 2. Publish RFC 9728 ProtectedResourceMetadata
+# 2. RFC 9728 metadata: NOT PUBLISHED in AGW v2.3.3
 #
-# We attach this via an AgentgatewayPolicy that targets all the MCP backends.
-# When an MCP client receives a 401 from a protected route, the gateway
-# responds with WWW-Authenticate: Bearer resource_metadata="<URL>", and the
-# URL serves the JSON metadata document.
+# The AgentgatewayPolicy.backend.mcp.authentication.resourceMetadata field
+# is accepted by the CRD but AGW v2.3.3 does not actually serve
+# /.well-known/oauth-protected-resource at the gateway LB (verified
+# empirically — endpoint returns 302 via the OIDC ExtAuth redirect).
 #
-# NOTE: the exact CRD path for resourceMetadata is product-version sensitive.
-# This shape matches the AGW OSS schema (LocalMcpAuthentication.resourceMetadata
-# in schema/config.json). Adjust to AgentgatewayPolicy.backend.mcp.authentication
-# if your CRD nests differently.
+# Applying the policy ALSO destabilizes the existing ExtAuth chain (the
+# new mcp.authentication.jwks block introduces a parallel JWT validation
+# path that conflicts with the EnterpriseAgentgatewayPolicy ExtAuth).
+#
+# Conclusion: skip the resource-metadata policy in this script. The
+# example doc and slide document the gap honestly.
 ###############################################################################
-log "Publishing RFC 9728 protected-resource-metadata"
+log "Skipping RFC 9728 publication (AGW v2.3.3 does not serve the endpoint)"
 
 AGW_LB=$(${KC} -n "${AGW_NAMESPACE}" get gateway agentgateway-hub \
   -o jsonpath='{.status.addresses[0].value}')
-DEX_ISSUER="http://${AGW_LB}/dex"
-
-${KC} apply -n "${AGW_NAMESPACE}" -f - <<EOF
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayPolicy
-metadata:
-  name: oauth21-resource-metadata
-  namespace: ${AGW_NAMESPACE}
-spec:
-  targetRefs:
-  - group: agentgateway.dev
-    kind: AgentgatewayBackend
-    name: mcp-backends
-  backend:
-    mcp:
-      authentication:
-        issuer: "${DEX_ISSUER}"
-        audiences:
-        - "agw-client"
-        - "${SERVICE_CLIENT_ID}"
-        resourceMetadata:
-          resource: "http://${AGW_LB}/mcp"
-          authorization_servers:
-          - "${DEX_ISSUER}"
-          bearer_methods_supported:
-          - "header"
-          scopes_supported:
-          - "openid"
-          - "email"
-          - "profile"
-          resource_documentation: "https://github.com/jamesilse-solo/agentgateway-multicluster-mcp-demo/blob/main/examples/04-oauth21.md"
-EOF
 
 log "OAuth 2.1 hardening applied"
 cat <<EOF

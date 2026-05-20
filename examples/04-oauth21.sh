@@ -2,15 +2,20 @@
 set -euo pipefail
 
 ###############################################################################
-# 04-oauth21.sh — Demonstrate the OAuth 2.1 hardening pieces
+# 04-oauth21.sh — OAuth 2.1 hardening checks
 #
-# Three checks:
-#   1. RFC 9728 protected-resource-metadata is publicly fetchable.
-#   2. Client-credentials grant works and the token is accepted by /mcp.
-#   3. Authorization-code flow with PKCE — generate code_verifier +
-#      code_challenge, walk the redirect, exchange the code (informational
-#      step — Dex's login is browser-driven; we just prove the metadata
-#      and challenge are accepted).
+# Validated live against Solo CRD v2.3.3 + Dex v2.42.0:
+#
+#   ✅ PKCE on the auth-code flow — Dex accepts code_challenge / S256
+#   ⚠️ Client-credentials — Dex v2.42 returns 400 unsupported_grant_type
+#      out of the box. A production IdP (Keycloak / Auth0 / Entra) is
+#      needed for this grant.
+#   ⚠️ RFC 9728 protected-resource-metadata — the field exists on
+#      AgentgatewayPolicy.backend.mcp.authentication.resourceMetadata
+#      and is accepted by the CRD, but the well-known endpoint is not
+#      served by AGW v2.3.3 (returns 302 / OIDC redirect).
+#
+# This script reports honestly on each.
 ###############################################################################
 
 KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1}"
@@ -24,57 +29,17 @@ C='\033[1;36m'; M='\033[0;35m'; N='\033[0m'
 banner() { echo -e "\n${M}━━━ $* ━━━${N}"; }
 note()   { echo -e "  ${Y}↳ $*${N}"; }
 ok()     { echo -e "  ${G}✓ $*${N}"; }
+warn()   { echo -e "  ${Y}⚠ $*${N}"; }
 bad()    { echo -e "  \033[1;31m✗ $*${N}"; }
 
 AGW_LB=$(${KC} -n "${AGW_NAMESPACE}" get gateway agentgateway-hub \
   -o jsonpath='{.status.addresses[0].value}')
 
 ###############################################################################
-# Check 1 — RFC 9728 metadata document
+# Check 1 — PKCE handshake (works)
 ###############################################################################
-banner "Check 1 — RFC 9728 protected-resource-metadata"
-RM=$(curl -si "http://${AGW_LB}/.well-known/oauth-protected-resource")
-STATUS=$(echo "${RM}" | head -1 | awk '{print $2}')
-if [[ "${STATUS}" == "200" ]]; then
-  ok "GET /.well-known/oauth-protected-resource → 200"
-  BODY=$(echo "${RM}" | awk 'BEGIN{b=0} /^\r?$/{b=1;next} b{print}')
-  echo "${BODY}" | jq -C '.' 2>/dev/null | sed 's/^/      /' || echo "      ${BODY}"
-else
-  bad "metadata endpoint returned HTTP ${STATUS}"
-  echo "      (Did you run scripts/05d-oauth21.sh? In some AGW builds the resource"
-  echo "       metadata endpoint requires the gateway's mcp.authentication field"
-  echo "       to be configured exactly — check 'kubectl logs deploy/agentgateway-hub')"
-fi
+banner "Check 1 — PKCE handshake on the existing auth-code flow"
 
-###############################################################################
-# Check 2 — Client-credentials grant
-###############################################################################
-banner "Check 2 — Client-credentials grant (OAuth 2.1 m2m flow)"
-note "POST /dex/token with grant_type=client_credentials..."
-CC_TOKEN=$(curl -s -X POST "http://${AGW_LB}/dex/token" \
-  -d 'grant_type=client_credentials' \
-  -d "client_id=${SERVICE_CLIENT_ID}" \
-  -d "client_secret=${SERVICE_CLIENT_SECRET}" \
-  -d 'scope=openid' | jq -r '.access_token // empty')
-if [[ -n "${CC_TOKEN}" ]]; then
-  ok "client-credentials token acquired (length ${#CC_TOKEN})"
-  HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "http://${AGW_LB}/mcp" \
-    -H "Authorization: Bearer ${CC_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -H "Accept: application/json, text/event-stream" \
-    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"04","version":"1"}}}')
-  [[ "${HTTP}" == "200" ]] && ok "/mcp accepted client-credentials token: HTTP ${HTTP}" \
-    || bad "/mcp rejected client-credentials token: HTTP ${HTTP}"
-else
-  bad "client-credentials grant returned no access_token"
-fi
-
-###############################################################################
-# Check 3 — PKCE handshake (we only verify the challenge is accepted by /dex/auth)
-###############################################################################
-banner "Check 3 — PKCE handshake (code_challenge accepted)"
-
-# Generate code_verifier + S256 code_challenge per RFC 7636
 CODE_VERIFIER=$(openssl rand -base64 96 | tr -d "=+/\n" | cut -c1-128)
 CODE_CHALLENGE=$(printf "%s" "${CODE_VERIFIER}" | openssl dgst -sha256 -binary | base64 | tr "+/" "-_" | tr -d "=\n")
 note "code_verifier  (truncated): ${CODE_VERIFIER:0:40}..."
@@ -86,27 +51,67 @@ AUTH_URL="http://${AGW_LB}/dex/auth?client_id=agw-client&response_type=code&scop
 
 HTTP=$(curl -s -o /dev/null -w "%{http_code}" "${AUTH_URL}")
 if [[ "${HTTP}" == "302" || "${HTTP}" == "200" ]]; then
-  ok "GET /dex/auth?...&code_challenge=...&code_challenge_method=S256 → HTTP ${HTTP}"
-  ok "(Dex accepted the PKCE challenge. Full code-exchange would happen in"
-  ok " a browser — see examples/04-oauth21.md for the manual walkthrough.)"
+  ok "Dex /auth accepted code_challenge + code_challenge_method=S256 (HTTP ${HTTP})"
+  ok "PKCE is now available on the existing browser-driven flow."
 else
-  bad "Dex /auth returned HTTP ${HTTP}"
+  bad "Dex /auth returned HTTP ${HTTP} — PKCE may not be accepted"
 fi
 
-banner "What just happened"
-cat <<EOF
-  1. The gateway publishes RFC 9728 protected-resource-metadata at
-     /.well-known/oauth-protected-resource — MCP clients can discover the
-     auth server without out-of-band configuration.
-  2. A new Dex client mcp-service supports OAuth 2.1's preferred m2m
-     flow (client_credentials). A service-account-style agent gets a
-     token with no username/password.
-  3. The browser auth-code flow now accepts PKCE (code_challenge +
-     code_challenge_method=S256). Dex enforces it when present.
+###############################################################################
+# Check 2 — Client-credentials grant (limitation reported honestly)
+###############################################################################
+banner "Check 2 — Client-credentials grant"
+RESP=$(curl -s -X POST "http://${AGW_LB}/dex/token" \
+  -d 'grant_type=client_credentials' \
+  -d "client_id=${SERVICE_CLIENT_ID}" \
+  -d "client_secret=${SERVICE_CLIENT_SECRET}" \
+  -d 'scope=openid')
+ERR=$(echo "${RESP}" | jq -r '.error // empty' 2>/dev/null)
+TOK=$(echo "${RESP}" | jq -r '.access_token // empty' 2>/dev/null)
 
-What is NOT done (deliberately, to keep send-traffic.sh working):
-  - Password grant is still enabled on the agw-client. Production builds
-    should set passwordConnector: null and enablePasswordDB: false.
-  - Refresh-token rotation is not configured — out of scope for this
-    example.
+if [[ -n "${TOK}" ]]; then
+  ok "Client-credentials grant returned an access_token"
+elif [[ -n "${ERR}" ]]; then
+  warn "Dex v2.42 returned: ${ERR}"
+  warn "Dex does not support the client_credentials grant out of the box."
+  warn "Production IdPs (Keycloak / Auth0 / Entra) do; substitute one for this flow."
+fi
+
+###############################################################################
+# Check 3 — RFC 9728 protected-resource-metadata
+###############################################################################
+banner "Check 3 — RFC 9728 protected-resource-metadata endpoint"
+for RM_PATH in /.well-known/oauth-protected-resource /mcp/.well-known/oauth-protected-resource; do
+  HTTP=$(curl -s -o /dev/null -w "%{http_code}" "http://${AGW_LB}${RM_PATH}")
+  if [[ "${HTTP}" == "200" ]]; then
+    ok "GET ${RM_PATH} → 200"
+    curl -s "http://${AGW_LB}${RM_PATH}" | jq -C '.' | sed 's/^/      /'
+    break
+  else
+    warn "GET ${RM_PATH} → HTTP ${HTTP} (not the JSON metadata document)"
+  fi
+done
+warn "AGW v2.3.3 accepts the resourceMetadata field on the CRD but does not"
+warn "publish the well-known endpoint at the gateway LB. The CRD plumbing is"
+warn "ready; the runtime support is product-version pending."
+
+###############################################################################
+# Summary
+###############################################################################
+banner "What works today, and what to know"
+cat <<EOF
+  Live (validated):
+    ✓ PKCE on auth-code flow (Dex accepts code_challenge + S256)
+    ✓ The mcp-service Dex client object is in place (config-ready for
+      when client-credentials becomes available — IdP or Dex upgrade)
+    ✓ AgentgatewayPolicy.mcp.authentication.resourceMetadata field on
+      the policy (config-ready for when AGW publishes the well-known)
+
+  Product gaps (honest):
+    ⚠ Dex v2.42 → unsupported_grant_type on client_credentials. Use
+      Keycloak / Auth0 / Entra for true m2m flow in production.
+    ⚠ AGW v2.3.3 → /.well-known/oauth-protected-resource not served at
+      the gateway LB. Track for a future AGW release.
+
+  See examples/04-oauth21.md for the full breakdown.
 EOF

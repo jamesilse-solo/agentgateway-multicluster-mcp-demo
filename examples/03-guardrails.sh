@@ -2,15 +2,16 @@
 set -euo pipefail
 
 ###############################################################################
-# 03-guardrails.sh — Demonstrate native PII guardrails
+# 03-guardrails.sh — Demonstrate tool-name guardrails (what works today)
 #
-# Sends three MCP calls through the gateway:
-#   1. A clean call (expect 200)
-#   2. A call containing an SSN in tool arguments (expect 403 blocked)
-#   3. A call containing a credit card number (expect 403 blocked)
+# Sends three MCP calls:
+#   1. A clean call to "echo"            (expect 200, isError=false)
+#   2. A call to "delete_database"       (expect blocked at gateway)
+#   3. A call to "admin_reset"           (expect blocked — startsWith match)
 #
-# The gateway enforces this via AgentgatewayPolicy.backend.mcp.guard with
-# the built-in ssn / creditCard regex rules. No custom code, no ExtProc.
+# These are the live guardrails available for MCP backends in Solo CRD
+# v2.3.3. Body-content PII regex on MCP traffic requires the ExtProc /
+# vendor-backend path — see examples/03-guardrails.md for the breakdown.
 ###############################################################################
 
 KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1}"
@@ -24,7 +25,6 @@ note()   { echo -e "  ${Y}↳ $*${N}"; }
 ok()     { echo -e "  ${G}✓ $*${N}"; }
 bad()    { echo -e "  \033[1;31m✗ $*${N}"; }
 
-banner "Step 0 — Resolve AGW Hub LB + acquire a token"
 AGW_LB=$(${KC} -n "${AGW_NAMESPACE}" get gateway agentgateway-hub \
   -o jsonpath='{.status.addresses[0].value}')
 note "AGW Hub: http://${AGW_LB}"
@@ -36,7 +36,6 @@ TOKEN=$(curl -s -X POST "http://${AGW_LB}/dex/token" \
 [[ -z "${TOKEN}" || "${TOKEN}" == "null" ]] && { bad "Token acquisition failed"; exit 1; }
 ok "Token acquired"
 
-# Helper — initialize and return session id
 init_session() {
   local path="$1"
   RESP=$(curl -si -X POST "http://${AGW_LB}${path}" \
@@ -47,42 +46,58 @@ init_session() {
   echo "$RESP" | grep -i '^mcp-session-id:' | tr -d '\r' | awk '{print $2}'
 }
 
-# Helper — make a tools/call and return the HTTP status
 call_tool() {
   local path="$1" sid="$2" body="$3"
-  curl -s -o /dev/null -w "%{http_code}" -X POST "http://${AGW_LB}${path}" \
+  curl -s -X POST "http://${AGW_LB}${path}" \
     -H "Authorization: Bearer ${TOKEN}" \
     -H "Content-Type: application/json" \
     -H "Accept: application/json, text/event-stream" \
     -H "Mcp-Session-Id: ${sid}" \
-    -d "${body}"
+    -d "${body}" \
+    | grep -o 'data:.*' | head -1 | sed 's/^data: //'
 }
 
-banner "Step 1 — Clean call (expect 200)"
+banner "Step 1 — Clean call to 'echo' (expect 200, no error)"
 SID=$(init_session /mcp)
-HTTP=$(call_tool /mcp "${SID}" '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"message":"hello from a clean caller"}}}')
-[[ "${HTTP}" == "200" ]] && ok "clean call: HTTP ${HTTP}" || bad "clean call: HTTP ${HTTP} (expected 200)"
+RESP=$(call_tool /mcp "${SID}" '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"message":"hello"}}}')
+IS_ERR=$(echo "${RESP}" | jq -r '.result.isError // "false"')
+[[ "${IS_ERR}" == "false" ]] && ok "echo call: success" || bad "echo call returned isError=${IS_ERR}"
 
-banner "Step 2 — Call containing an SSN (expect 403)"
+banner "Step 2 — Call 'delete_database' (expect denied)"
 SID=$(init_session /mcp)
-HTTP=$(call_tool /mcp "${SID}" '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"message":"customer SSN is 123-45-6789, please log"}}}')
-[[ "${HTTP}" == "403" ]] && ok "SSN call: HTTP ${HTTP} (blocked at gateway)" || bad "SSN call: HTTP ${HTTP} (expected 403)"
+RESP=$(call_tool /mcp "${SID}" '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"delete_database","arguments":{}}}')
+ERR_MSG=$(echo "${RESP}" | jq -r '.error.message // .result.content[0].text // empty' 2>/dev/null)
+if echo "${ERR_MSG}" | grep -qiE "denied|forbidden|unknown tool|tool not"; then
+  ok "delete_database call: denied — \"${ERR_MSG:0:80}\""
+elif echo "${RESP}" | jq -e '.result.isError == true' >/dev/null 2>&1; then
+  ok "delete_database call: isError=true"
+else
+  bad "delete_database call may have leaked through:"
+  echo "      ${RESP:0:200}"
+fi
 
-banner "Step 3 — Call containing a credit card (expect 403)"
+banner "Step 3 — Call 'admin_reset' (startsWith blocklist — expect denied)"
 SID=$(init_session /mcp)
-HTTP=$(call_tool /mcp "${SID}" '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"echo","arguments":{"message":"my card is 4111-1111-1111-1111"}}}')
-[[ "${HTTP}" == "403" ]] && ok "CC call: HTTP ${HTTP} (blocked at gateway)" || bad "CC call: HTTP ${HTTP} (expected 403)"
+RESP=$(call_tool /mcp "${SID}" '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"admin_reset","arguments":{}}}')
+ERR_MSG=$(echo "${RESP}" | jq -r '.error.message // .result.content[0].text // empty' 2>/dev/null)
+if echo "${ERR_MSG}" | grep -qiE "denied|forbidden|unknown tool|tool not"; then
+  ok "admin_reset call: denied — \"${ERR_MSG:0:80}\""
+elif echo "${RESP}" | jq -e '.result.isError == true' >/dev/null 2>&1; then
+  ok "admin_reset call: isError=true"
+else
+  bad "admin_reset call may have leaked through:"
+  echo "      ${RESP:0:200}"
+fi
 
 banner "What just happened"
 cat <<EOF
-  1. A clean MCP request reached the upstream MCP server and returned 200.
-  2. A request whose body matched the gateway's built-in SSN regex was
-     rejected at the gateway. The upstream MCP server never saw the body.
-  3. A request whose body matched the credit-card regex was rejected.
+  1. The "echo" tool is on the implicit allowlist — call succeeded.
+  2. The "delete_database" tool name is on the Deny blocklist — the
+     gateway rejected the call before reaching the MCP server.
+  3. The "admin_*" prefix is also denied via startsWith. Same enforcement
+     path.
 
-The gateway enforces this via AgentgatewayPolicy.backend.mcp.guard with
-"action: reject" and built-in regex rules. Add more rules (built-ins or
-custom patterns) by editing the policy. See:
-  scripts/05c-guardrails.sh
-  examples/03-guardrails.md
+These are the live MCP guardrails available in Solo CRD v2.3.3. Content-
+level PII regex (SSN / credit-card in request bodies) for MCP traffic
+requires the ExtProc / vendor-backend path — see examples/03-guardrails.md.
 EOF

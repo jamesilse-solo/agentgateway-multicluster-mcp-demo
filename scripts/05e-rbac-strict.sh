@@ -53,79 +53,68 @@ log "Adding per-tenant Dex clients (tenant-a-client, tenant-b-client)"
 CURRENT=$(${KC} -n "${DEX_NAMESPACE}" get configmap dex-config \
   -o jsonpath='{.data.config\.yaml}')
 
-add_client_block() {
-  cat <<EOF
-    - id: $1
-      name: "OAuth client for $2"
-      secret: "$1-secret"
-      redirectURIs:
-      - "http://localhost/callback"
-EOF
-}
-
+PATCHED=0
 NEW_CONFIG="${CURRENT}"
 for CID in tenant-a-client tenant-b-client; do
   if echo "${NEW_CONFIG}" | grep -q "id: ${CID}"; then
     echo "  ${CID} already present — skipping"
-  else
-    CLIENT_BLOCK=$(add_client_block "${CID}" "${CID%-client}")
-    NEW_CONFIG=$(echo "${NEW_CONFIG}" | awk -v add="${CLIENT_BLOCK}" '
-      /^    staticClients:/ { in_clients=1; print; next }
-      in_clients && /^    [a-zA-Z]/ { print add; in_clients=0 }
-      { print }
-      END { if (in_clients) print add }
-    ')
+    continue
   fi
+  export CID
+  NEW_CONFIG=$(echo "${NEW_CONFIG}" | python3 -c '
+import sys, os
+config = sys.stdin.read()
+cid = os.environ["CID"]
+new_client = f"""- id: {cid}
+  name: "OAuth client for {cid}"
+  secret: "{cid}-secret"
+  redirectURIs:
+  - "http://localhost/callback"
+"""
+out = []
+for line in config.splitlines():
+    out.append(line)
+    if line.strip() == "staticClients:":
+        out.append(new_client.rstrip())
+print("\n".join(out))
+')
+  PATCHED=1
 done
+unset CID
 
-${KC} -n "${DEX_NAMESPACE}" create configmap dex-config \
-  --from-literal=config.yaml="${NEW_CONFIG}" \
-  --dry-run=client -o yaml | ${KC} apply -f -
-${KC} -n "${DEX_NAMESPACE}" rollout restart deployment/dex
-${KC} -n "${DEX_NAMESPACE}" rollout status deployment/dex --timeout=120s
+if [[ ${PATCHED} -eq 1 ]]; then
+  ${KC} -n "${DEX_NAMESPACE}" create configmap dex-config \
+    --from-literal=config.yaml="${NEW_CONFIG}" \
+    --dry-run=client -o yaml | ${KC} apply -f -
+  ${KC} -n "${DEX_NAMESPACE}" rollout restart deployment/dex
+  ${KC} -n "${DEX_NAMESPACE}" rollout status deployment/dex --timeout=120s
+
+  # ExtAuth caches Dex's JWKS / discovery doc. Rolling Dex without
+  # rolling ExtAuth leaves stale state that causes /mcp Bearer auth
+  # to 302-redirect instead of accept. Roll ExtAuth too.
+  log "Rolling ExtAuth so its Dex client cache is fresh"
+  ${KC} -n "${AGW_NAMESPACE}" rollout restart deploy/ext-auth-service-enterprise-agentgateway
+  ${KC} -n "${AGW_NAMESPACE}" rollout status deploy/ext-auth-service-enterprise-agentgateway --timeout=120s
+fi
 
 ###############################################################################
-# 2. Per-tenant authentication restriction
+# 2. Strict audience enforcement — NOT applied in this script
+#
+# The "correct" enforcement would be an AgentgatewayPolicy with
+# backend.mcp.authentication.audiences = ["<tenant>-client"] per tenant.
+# That field requires a jwks block (CRD-mandatory in v2.3.3), which
+# introduces a parallel JWT-validation path that conflicts with the
+# existing EnterpriseAgentgatewayPolicy (oidc-extauth) chain — applying
+# it destabilizes /mcp on the cluster.
+#
+# Production options:
+#   A. Per-tenant AuthConfig with audience restriction on the existing
+#      EnterpriseAgentgatewayPolicy (AuthConfig.oauth2.oidcAuthorizationCode.
+#      validAudiences or equivalent) — clean, no parallel validator.
+#   B. OPA bundle wired to ExtAuth that decides path-vs-aud per request.
+#
+# This script stops at the Dex-client setup. Example 06 demonstrates
+# token differentiation (each tenant gets a JWT with a distinct aud)
+# and documents the enforcement gap honestly.
 ###############################################################################
-log "Applying audience-restricted authentication policies"
-
-AGW_LB=$(${KC} -n "${AGW_NAMESPACE}" get gateway agentgateway-hub \
-  -o jsonpath='{.status.addresses[0].value}')
-DEX_ISSUER="http://${AGW_LB}/dex"
-
-for T in tenant-a tenant-b; do
-  ${KC} apply -n "${AGW_NAMESPACE}" -f - <<EOF
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayPolicy
-metadata:
-  name: rbac-strict-${T}
-  namespace: ${AGW_NAMESPACE}
-spec:
-  targetRefs:
-  - group: agentgateway.dev
-    kind: AgentgatewayBackend
-    name: mcp-backends-${T}
-  backend:
-    mcp:
-      authentication:
-        issuer: "${DEX_ISSUER}"
-        audiences:
-        - "${T}-client"
-EOF
-done
-
-log "Strict RBAC applied"
-cat <<EOF
-
-Test from a host with kubectl access:
-  ./examples/06-rbac-and-registry.sh
-
-To remove:
-  ./scripts/05e-rbac-strict.sh --cleanup
-
-What changed:
-  - tenant-a-client and tenant-b-client are now valid Dex clients.
-  - /mcp/tenant-a only accepts JWTs with aud=tenant-a-client.
-  - /mcp/tenant-b only accepts JWTs with aud=tenant-b-client.
-  - A tenant-a JWT hitting /mcp/tenant-b → 401.
-EOF
+log "Strict cross-tenant enforcement is a documented follow-up (see examples/06)"

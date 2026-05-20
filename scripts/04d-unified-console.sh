@@ -207,6 +207,12 @@ spec:
     - path:
         type: PathPrefix
         value: /console
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
     backendRefs:
     - group: agentgateway.dev
       kind: AgentgatewayBackend

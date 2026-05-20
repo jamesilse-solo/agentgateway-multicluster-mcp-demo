@@ -36,7 +36,7 @@ bad() { echo "  ✗ $*"; }
 ###############################################################################
 log "Check 1 — MCP metric fields on AGW access logs"
 RECENT_LOG=$(${KC} -n "${AGW_NAMESPACE}" logs deploy/agentgateway-hub --tail=200 2>&1 \
-  | grep -i 'mcp.method.name' | tail -1)
+  | grep -i 'mcp.method.name' | tail -1 || true)
 if [[ -n "${RECENT_LOG}" ]]; then
   ok "Found access log with mcp.method.name field:"
   echo "${RECENT_LOG}" | python3 -m json.tool 2>/dev/null | grep -E '"mcp|"route|"http.method|"http.status' \
@@ -50,21 +50,27 @@ fi
 # Check 2 — Solo Enterprise UI / ClickHouse / OTel collector status
 ###############################################################################
 log "Check 2 — Telemetry stack"
-for D in solo-enterprise-ui solo-enterprise-telemetry-collector solo-enterprise-clickhouse; do
-  if ${KC} -n "${AGW_NAMESPACE}" get pod -l app.kubernetes.io/name=${D} \
+# Label conventions vary; check by app= and app.kubernetes.io/name=
+check_pod() {
+  local NAME="$1" SEL="$2"
+  if ${KC} -n "${AGW_NAMESPACE}" get pod -l "${SEL}" \
       -o jsonpath='{.items[*].status.phase}' 2>/dev/null | grep -q Running; then
-    ok "${D}: Running"
+    ok "${NAME}: Running"
   else
-    bad "${D}: not Running (re-run scripts/04a-agw-management-ui.sh)"
+    bad "${NAME}: not Running (re-run scripts/04a-agw-management-ui.sh)"
   fi
-done
+}
+check_pod "solo-enterprise-ui"                  "app=solo-enterprise-ui"
+check_pod "solo-enterprise-telemetry-collector" "app=solo-enterprise-telemetry-collector"
+check_pod "agw-management-clickhouse"           "app.kubernetes.io/name=clickhouse"
 
 ###############################################################################
 # Check 3 — Cluster2 telemetry shipment
 ###############################################################################
 log "Check 3 — Cluster2 telemetry shipment to cluster1"
-if kubectl --context "${KUBE_CONTEXT/cluster1/cluster2}" -n "${AGW_NAMESPACE}" \
-    get pod -l app.kubernetes.io/name=solo-enterprise-telemetry-collector \
+PEER_CTX="${KUBE_CONTEXT/cluster1/cluster2}"
+if kubectl --context "${PEER_CTX}" -n "${AGW_NAMESPACE}" \
+    get pod -l app=solo-enterprise-telemetry-collector \
     -o jsonpath='{.items[*].status.phase}' 2>/dev/null | grep -q Running; then
   ok "cluster2 telemetry collector: Running"
 else
