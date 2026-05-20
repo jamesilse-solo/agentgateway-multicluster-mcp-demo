@@ -15,6 +15,8 @@ This phase consolidates v1's CP-05 (distributed tracing) and adds OBS-02 (token 
 |----|-------------|---------------------|--------------------|
 | OBS-01 | OTel Distributed Tracing | One trace tree spans `agent → MCP Gateway (cluster1) → HBONE → MCP Gateway (cluster2) → tool`. Spans carry tool name, identity, and latency. | None |
 | OBS-02 | Token Usage & Model Breakdown | Management UI surfaces per-model token counts, error rates, latency percentiles, and per-agent breakdown — sourced from gateway-emitted spans. | None |
+| OBS-03 | **MCP-aware access logs** | Every gateway access log line carries `mcp.method.name`, `mcp.tool.name`, `mcp.session.id`, `trace.id`. Verified by `./scripts/04b-observability.sh` reading the data plane logs. | None |
+| OBS-04 | **Graceful failover** | Scaling cluster1's MCP server to zero does not break agent calls to `/mcp/peer` — they continue to return HTTP 200 because the AGW-to-AGW chain routes through cluster2. Demonstrated by `./examples/05-observability-resilience.sh`. | Scales `mcp-server-everything` to 0, then back to 1 (idempotent) |
 
 ## Run
 
