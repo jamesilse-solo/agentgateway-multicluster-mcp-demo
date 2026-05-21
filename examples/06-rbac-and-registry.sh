@@ -45,7 +45,7 @@ AGW_LB=$(${KC} -n "${AGW_NAMESPACE}" get gateway agentgateway-hub \
 
 get_token() {
   local user="$1" pass="$2" client_id="$3" client_secret="$4"
-  curl -s -X POST "http://${AGW_LB}/dex/token" \
+  curl -s -X POST "http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token" \
     -d 'grant_type=password' \
     -d "username=${user}" -d "password=${pass}" \
     -d "client_id=${client_id}" -d "client_secret=${client_secret}" \
@@ -66,8 +66,8 @@ init_status() {
 }
 
 banner "Step 1 — Acquire one JWT per tenant client (different audiences)"
-TOKEN_A=$(get_token tenant-a-agent@example.com tenant-a-pass tenant-a-client tenant-a-client-secret)
-TOKEN_B=$(get_token tenant-b-agent@example.com tenant-b-pass tenant-b-client tenant-b-client-secret)
+TOKEN_A=$(get_token tenant-a-agent tenant-a-pass tenant-a-client tenant-a-client-secret)
+TOKEN_B=$(get_token tenant-b-agent tenant-b-pass tenant-b-client tenant-b-client-secret)
 [[ -z "${TOKEN_A}" ]] && { bad "tenant-a token acquisition failed (run scripts/05e-rbac-strict.sh)"; exit 1; }
 [[ -z "${TOKEN_B}" ]] && { bad "tenant-b token acquisition failed"; exit 1; }
 ok "tenant-a token aud = $(show_aud "${TOKEN_A}")"

@@ -31,13 +31,13 @@ else
   exit 1
 fi
 
-banner "Step 2 — /console without a token (expect 302 to /dex/auth)"
+banner "Step 2 — /console without a token (expect 302 to /realms/solo-demo/protocol/openid-connect/auth)"
 HTTP=$(curl -s -o /dev/null -w "%{http_code}" "http://${AGW_LB}/console/")
 [[ "${HTTP}" == "302" ]] && ok "/console/ → 302 (OIDC redirect)" || bad "/console/ → HTTP ${HTTP} (expected 302)"
 
 banner "Step 3 — /console with a Bearer token (expect 200 + console HTML)"
-TOKEN=$(curl -s -X POST "http://${AGW_LB}/dex/token" \
-  -d 'grant_type=password' -d 'username=demo@example.com' -d 'password=demo-pass' \
+TOKEN=$(curl -s -X POST "http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token" \
+  -d 'grant_type=password' -d 'username=demo' -d 'password=demo-pass' \
   -d 'client_id=agw-client' -d 'client_secret=agw-client-secret' \
   -d 'scope=openid email profile' | jq -r '.id_token')
 RESP=$(curl -s -w "\n--HTTP:%{http_code}--" \

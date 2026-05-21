@@ -33,6 +33,7 @@ AGW_NAMESPACE="${AGW_NAMESPACE:-agentgateway-system}"
 AREG_NAMESPACE="${AREG_NAMESPACE:-agentregistry}"
 GM_NAMESPACE="${GM_NAMESPACE:-gloo-mesh}"
 DEX_NAMESPACE="${DEX_NAMESPACE:-dex}"
+KEYCLOAK_NAMESPACE="${KEYCLOAK_NAMESPACE:-keycloak}"
 AREG_SVC="${AREG_SVC:-agentregistry-agentregistry-enterprise}"
 AGW_MGMT_SVC="${AGW_MGMT_SVC:-solo-enterprise-ui}"
 KC="kubectl --context ${KUBE_CONTEXT}"
@@ -60,6 +61,7 @@ echo ""
 pkill -f "port-forward.*agentregistry.*8080"      2>/dev/null || true
 pkill -f "port-forward.*solo-enterprise-ui.*4000" 2>/dev/null || true
 pkill -f "port-forward.*gloo-mesh-ui.*8090"       2>/dev/null || true
+pkill -f "port-forward.*keycloak.*8081"           2>/dev/null || true
 pkill -f "port-forward.*dex.*5556"                2>/dev/null || true
 sleep 1
 
@@ -124,24 +126,43 @@ done
 [[ "${GME_OK}" == "false" ]] && warn "Gloo Mesh UI not responding — check: ${KC} -n ${GM_NAMESPACE} get pod -l app=gloo-mesh-ui"
 
 ###############################################################################
-# 4. Dex OIDC IdP  →  5556:5556
+# 4. Keycloak admin UI  →  8081:8080
+#
+# The realm OIDC endpoints (/realms/<realm>/protocol/openid-connect/*) are
+# already reachable from a laptop through the AGW LB. This forward is only
+# for the Keycloak admin console (login: admin / admin) when you need to
+# inspect realm configuration or add a tenant.
 ###############################################################################
-hdr "4. Dex OIDC IdP"
+hdr "4. Keycloak Admin Console"
 
-${KC} -n "${DEX_NAMESPACE}" port-forward svc/dex 5556:5556 &>/dev/null &
-PF_DEX=$!
-echo -e "  Started (PID ${PF_DEX}), waiting for readiness..."
-
-DEX_OK=false
-for i in $(seq 1 15); do
-  if curl -s --max-time 2 "http://localhost:5556/dex/.well-known/openid-configuration" &>/dev/null; then
-    ok "Dex IdP ready — http://localhost:5556/dex"
-    DEX_OK=true
-    break
-  fi
-  sleep 1
-done
-[[ "${DEX_OK}" == "false" ]] && warn "Dex not responding — check: ${KC} -n ${DEX_NAMESPACE} get pod -l app=dex"
+if ${KC} -n "${KEYCLOAK_NAMESPACE}" get svc keycloak >/dev/null 2>&1; then
+  ${KC} -n "${KEYCLOAK_NAMESPACE}" port-forward svc/keycloak 8081:8080 &>/dev/null &
+  PF_KC=$!
+  echo -e "  Started (PID ${PF_KC}), waiting for readiness..."
+  KC_OK=false
+  for i in $(seq 1 15); do
+    if curl -s --max-time 2 "http://localhost:8081/realms/master/.well-known/openid-configuration" &>/dev/null; then
+      ok "Keycloak ready — http://localhost:8081  (admin / admin)"
+      KC_OK=true
+      break
+    fi
+    sleep 1
+  done
+  [[ "${KC_OK}" == "false" ]] && warn "Keycloak not responding — check: ${KC} -n ${KEYCLOAK_NAMESPACE} get pod -l app=keycloak"
+elif ${KC} -n "${DEX_NAMESPACE}" get svc dex >/dev/null 2>&1; then
+  # Fallback: Dex is still installed (legacy path)
+  hdr "4. Dex OIDC IdP (legacy)"
+  ${KC} -n "${DEX_NAMESPACE}" port-forward svc/dex 5556:5556 &>/dev/null &
+  PF_DEX=$!
+  echo -e "  Started (PID ${PF_DEX}), waiting for readiness..."
+  for i in $(seq 1 15); do
+    curl -s --max-time 2 "http://localhost:5556/dex/.well-known/openid-configuration" &>/dev/null && \
+      { ok "Dex IdP ready — http://localhost:5556/dex"; break; }
+    sleep 1
+  done
+else
+  warn "No IdP installed (Keycloak nor Dex found). Run scripts/03b-keycloak.sh first."
+fi
 
 ###############################################################################
 # 5. AgentGateway MCP endpoints — external LBs (no port-forward needed)

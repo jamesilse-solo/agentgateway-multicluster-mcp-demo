@@ -17,8 +17,8 @@ set -euo pipefail
 #                                      rate limit (premium vs. free tier)
 #
 # Two suggested Dex users (added by 03-dex.sh in this PR):
-#   - tenant-a-agent@example.com / tenant-a-pass  (premium tier)
-#   - tenant-b-agent@example.com / tenant-b-pass  (free tier)
+#   - tenant-a-agent / tenant-a-pass  (premium tier)
+#   - tenant-b-agent / tenant-b-pass  (free tier)
 #
 # Both users have valid JWTs and either CAN authenticate against either
 # path — the policy *intent* (which tenant uses which path) is enforced by

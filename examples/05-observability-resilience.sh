@@ -38,8 +38,8 @@ trap restore_cluster1_mcp EXIT
 
 AGW_LB=$(${KC1} -n "${AGW_NAMESPACE}" get gateway agentgateway-hub \
   -o jsonpath='{.status.addresses[0].value}')
-TOKEN=$(curl -s -X POST "http://${AGW_LB}/dex/token" \
-  -d 'grant_type=password' -d 'username=demo@example.com' -d 'password=demo-pass' \
+TOKEN=$(curl -s -X POST "http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token" \
+  -d 'grant_type=password' -d 'username=demo' -d 'password=demo-pass' \
   -d 'client_id=agw-client' -d 'client_secret=agw-client-secret' \
   -d 'scope=openid email profile' | jq -r '.id_token')
 

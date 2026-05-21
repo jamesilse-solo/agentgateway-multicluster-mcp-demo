@@ -4,12 +4,12 @@ set -euo pipefail
 ###############################################################################
 # 04-oauth21.sh — OAuth 2.1 hardening checks
 #
-# Validated live against Solo CRD v2.3.3 + Dex v2.42.0:
+# Validated live against Solo CRD v2.3.3 + Keycloak 26 (solo-demo realm):
 #
-#   ✅ PKCE on the auth-code flow — Dex accepts code_challenge / S256
-#   ⚠️ Client-credentials — Dex v2.42 returns 400 unsupported_grant_type
-#      out of the box. A production IdP (Keycloak / Auth0 / Entra) is
-#      needed for this grant.
+#   ✅ PKCE on the auth-code flow — Keycloak accepts code_challenge / S256
+#   ✅ Client-credentials grant — Keycloak issues a token for mcp-service
+#      (this was the headline OAuth 2.1 gap when the demo ran on Dex
+#      v2.42; cutover to Keycloak closes it).
 #   ⚠️ RFC 9728 protected-resource-metadata — the field exists on
 #      AgentgatewayPolicy.backend.mcp.authentication.resourceMetadata
 #      and is accepted by the CRD, but the well-known endpoint is not
@@ -47,21 +47,21 @@ note "code_challenge (S256):      ${CODE_CHALLENGE}"
 
 REDIRECT_URI="http://${AGW_LB}/callback"
 STATE="example-04-pkce-$(date +%s)"
-AUTH_URL="http://${AGW_LB}/dex/auth?client_id=agw-client&response_type=code&scope=openid+email+profile&redirect_uri=${REDIRECT_URI}&state=${STATE}&code_challenge=${CODE_CHALLENGE}&code_challenge_method=S256"
+AUTH_URL="http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/auth?client_id=agw-client&response_type=code&scope=openid+email+profile&redirect_uri=${REDIRECT_URI}&state=${STATE}&code_challenge=${CODE_CHALLENGE}&code_challenge_method=S256"
 
 HTTP=$(curl -s -o /dev/null -w "%{http_code}" "${AUTH_URL}")
 if [[ "${HTTP}" == "302" || "${HTTP}" == "200" ]]; then
-  ok "Dex /auth accepted code_challenge + code_challenge_method=S256 (HTTP ${HTTP})"
+  ok "Keycloak /auth accepted code_challenge + code_challenge_method=S256 (HTTP ${HTTP})"
   ok "PKCE is now available on the existing browser-driven flow."
 else
-  bad "Dex /auth returned HTTP ${HTTP} — PKCE may not be accepted"
+  bad "Keycloak /auth returned HTTP ${HTTP} — PKCE may not be accepted"
 fi
 
 ###############################################################################
 # Check 2 — Client-credentials grant (limitation reported honestly)
 ###############################################################################
 banner "Check 2 — Client-credentials grant"
-RESP=$(curl -s -X POST "http://${AGW_LB}/dex/token" \
+RESP=$(curl -s -X POST "http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token" \
   -d 'grant_type=client_credentials' \
   -d "client_id=${SERVICE_CLIENT_ID}" \
   -d "client_secret=${SERVICE_CLIENT_SECRET}" \
@@ -70,11 +70,11 @@ ERR=$(echo "${RESP}" | jq -r '.error // empty' 2>/dev/null)
 TOK=$(echo "${RESP}" | jq -r '.access_token // empty' 2>/dev/null)
 
 if [[ -n "${TOK}" ]]; then
-  ok "Client-credentials grant returned an access_token"
+  ok "Client-credentials grant returned an access_token (length ${#TOK})"
+  ok "Keycloak issues a real m2m token for mcp-service. No user, no password."
 elif [[ -n "${ERR}" ]]; then
-  warn "Dex v2.42 returned: ${ERR}"
-  warn "Dex does not support the client_credentials grant out of the box."
-  warn "Production IdPs (Keycloak / Auth0 / Entra) do; substitute one for this flow."
+  warn "Keycloak returned: ${ERR}"
+  warn "Check that scripts/03b-keycloak.sh ran and the mcp-service client exists."
 fi
 
 ###############################################################################
@@ -101,15 +101,13 @@ warn "ready; the runtime support is product-version pending."
 banner "What works today, and what to know"
 cat <<EOF
   Live (validated):
-    ✓ PKCE on auth-code flow (Dex accepts code_challenge + S256)
-    ✓ The mcp-service Dex client object is in place (config-ready for
-      when client-credentials becomes available — IdP or Dex upgrade)
+    ✓ PKCE on auth-code flow (Keycloak accepts code_challenge + S256)
+    ✓ Client-credentials grant (Keycloak realm mcp-service client returns
+      a JWT — the m2m flow OAuth 2.1 prefers over password grant)
     ✓ AgentgatewayPolicy.mcp.authentication.resourceMetadata field on
       the policy (config-ready for when AGW publishes the well-known)
 
   Product gaps (honest):
-    ⚠ Dex v2.42 → unsupported_grant_type on client_credentials. Use
-      Keycloak / Auth0 / Entra for true m2m flow in production.
     ⚠ AGW v2.3.3 → /.well-known/oauth-protected-resource not served at
       the gateway LB. Track for a future AGW release.
 

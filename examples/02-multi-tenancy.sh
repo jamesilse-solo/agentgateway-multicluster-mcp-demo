@@ -52,7 +52,7 @@ note "AGW Hub: http://${AGW_LB}"
 banner "Step 1 — Acquire one JWT per tenant"
 
 get_token() {
-  curl -s -X POST "http://${AGW_LB}/dex/token" \
+  curl -s -X POST "http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token" \
     -d 'grant_type=password' \
     -d "username=$1" -d "password=$2" \
     -d 'client_id=agw-client' -d 'client_secret=agw-client-secret' \
@@ -60,13 +60,13 @@ get_token() {
     | jq -r '.id_token'
 }
 
-note "Acquiring token as tenant-a-agent@example.com..."
-TOKEN_A=$(get_token tenant-a-agent@example.com tenant-a-pass)
+note "Acquiring token as tenant-a-agent..."
+TOKEN_A=$(get_token tenant-a-agent tenant-a-pass)
 [[ -z "${TOKEN_A}" || "${TOKEN_A}" == "null" ]] && { echo "✗ tenant-a token acquisition failed"; exit 1; }
 ok "tenant-a token acquired (length ${#TOKEN_A})"
 
-note "Acquiring token as tenant-b-agent@example.com..."
-TOKEN_B=$(get_token tenant-b-agent@example.com tenant-b-pass)
+note "Acquiring token as tenant-b-agent..."
+TOKEN_B=$(get_token tenant-b-agent tenant-b-pass)
 [[ -z "${TOKEN_B}" || "${TOKEN_B}" == "null" ]] && { echo "✗ tenant-b token acquisition failed"; exit 1; }
 ok "tenant-b token acquired (length ${#TOKEN_B})"
 

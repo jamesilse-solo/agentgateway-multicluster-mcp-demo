@@ -127,7 +127,7 @@ What you can now do:
   curl -s http://${AGW_LB}/.well-known/oauth-protected-resource | jq
 
   # 2. OAuth 2.1 client-credentials grant (no user, no password):
-  TOKEN=\$(curl -s -X POST "http://${AGW_LB}/dex/token" \\
+  TOKEN=\$(curl -s -X POST "http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token" \\
     -d 'grant_type=client_credentials' \\
     -d 'client_id=${SERVICE_CLIENT_ID}' \\
     -d 'client_secret=${SERVICE_CLIENT_SECRET}' \\
