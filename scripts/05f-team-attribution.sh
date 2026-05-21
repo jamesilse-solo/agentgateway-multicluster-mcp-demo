@@ -64,6 +64,33 @@ ${KC} -n "${KEYCLOAK_NAMESPACE}" exec "${KC_POD}" -- \
     >/dev/null
 
 ###############################################################################
+# 1b. Add `team` to the realm's user-profile schema
+#
+# Keycloak 24+ enforces declared user profile attributes by default — custom
+# attributes set on a user are silently dropped unless they're declared in
+# the realm's user-profile schema OR unmanagedAttributePolicy is ENABLED.
+###############################################################################
+log "Ensuring 'team' attribute is declared in the user-profile schema"
+PROFILE=$(${KC} -n "${KEYCLOAK_NAMESPACE}" exec "${KC_POD}" -- \
+  /opt/keycloak/bin/kcadm.sh get users/profile -r "${KEYCLOAK_REALM}" 2>/dev/null)
+echo "${PROFILE}" | python3 -c "
+import sys, json
+p = json.load(sys.stdin)
+attrs = p.setdefault('attributes', [])
+if not any(a.get('name') == 'team' for a in attrs):
+    attrs.append({
+        'name': 'team',
+        'displayName': 'Team',
+        'multivalued': False,
+        'permissions': {'view': ['admin', 'user'], 'edit': ['admin', 'user']}
+    })
+p['unmanagedAttributePolicy'] = 'ENABLED'
+print(json.dumps(p))
+" | ${KC} -n "${KEYCLOAK_NAMESPACE}" exec -i "${KC_POD}" -- /bin/sh -c \
+  'cat > /tmp/profile.json && /opt/keycloak/bin/kcadm.sh update users/profile -r '"${KEYCLOAK_REALM}"' -f /tmp/profile.json' \
+  2>&1 | tail -2 || true
+
+###############################################################################
 # 2. Set the team attribute on each user
 ###############################################################################
 log "Setting team attribute on Keycloak users"
