@@ -2,18 +2,14 @@
 set -euo pipefail
 
 ###############################################################################
-# 05-extauth.sh — Authentication (Flow 1: User Auth via Dex OIDC ExtAuth)
+# 05-extauth.sh — Authentication via Keycloak OIDC + ExtAuth
 #
-# Implements Flow 1 (User Auth): configures ExtAuth + Redis to enforce Dex
-# OIDC on the AgentGateway Hub.
-# Unauthenticated browser requests receive 302 redirect to Dex login;
-# MCP clients use Bearer JWT from Dex.
-#
-# For Flow 2 (MCP Auth with dynamic discovery) see the README — requires
-# Keycloak or Auth0 (Dex does not support MCP OAuth dynamic client registration).
+# Configures ExtAuth + Redis to enforce Keycloak OIDC on the AgentGateway Hub.
+# Unauthenticated browser requests receive 302 redirect to Keycloak's login;
+# MCP clients use Bearer JWT from Keycloak's token endpoint.
 #
 # Prerequisites:
-#   - 03-dex.sh has run (Dex is deployed and running)
+#   - 03b-keycloak.sh has run (Keycloak realm + clients + users present)
 #   - AgentGateway Enterprise is installed with ExtAuth + ExtCache running
 #   - Hub gateway (agentgateway-hub) exists (02-configure.sh)
 #
@@ -29,17 +25,11 @@ set -euo pipefail
 KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1}"
 AGW_NAMESPACE="${AGW_NAMESPACE:-agentgateway-system}"
 
-# IDP selector: keycloak (default, recommended) or dex (legacy)
-IDP="${IDP:-keycloak}"
-
-# Dex (legacy) parameters
-DEX_NAMESPACE="${DEX_NAMESPACE:-dex}"
-
 # Keycloak parameters
 KEYCLOAK_NAMESPACE="${KEYCLOAK_NAMESPACE:-keycloak}"
 KEYCLOAK_REALM="${KEYCLOAK_REALM:-solo-demo}"
 
-# Shared OAuth client (same client name across IdPs for portability)
+# Keycloak OAuth client used for browser auth-code + ExtAuth session
 OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-agw-client}"
 OIDC_CLIENT_SECRET="${OIDC_CLIENT_SECRET:-agw-client-secret}"
 
@@ -54,32 +44,9 @@ if [[ -z "${AGW_LB}" ]]; then
   exit 1
 fi
 
-# Resolve the IdP-specific issuer / discovery / JWKS / token URLs.
-case "${IDP}" in
-  keycloak)
-    OIDC_BASE="http://${AGW_LB}/realms/${KEYCLOAK_REALM}"
-    OIDC_ISSUER_URL="${OIDC_BASE}"
-    IDP_NAMESPACE="${KEYCLOAK_NAMESPACE}"
-    IDP_BACKEND_NAME="keycloak-backend"
-    IDP_SVC_HOST="keycloak.${KEYCLOAK_NAMESPACE}.svc.cluster.local"
-    IDP_SVC_PORT="8080"
-    IDP_LB_PATH_PREFIX="/realms"
-    ;;
-  dex)
-    OIDC_BASE="http://${AGW_LB}/dex"
-    OIDC_ISSUER_URL="${OIDC_BASE}/"
-    IDP_NAMESPACE="${DEX_NAMESPACE}"
-    IDP_BACKEND_NAME="dex-backend"
-    IDP_SVC_HOST="dex.${DEX_NAMESPACE}.svc.cluster.local"
-    IDP_SVC_PORT="5556"
-    IDP_LB_PATH_PREFIX="/dex"
-    ;;
-  *)
-    echo "ERROR: IDP must be 'keycloak' or 'dex' (got '${IDP}')"
-    exit 1
-    ;;
-esac
-
+# Keycloak realm URLs (reachable through the AGW LB by 03b-keycloak.sh's routes)
+OIDC_BASE="http://${AGW_LB}/realms/${KEYCLOAK_REALM}"
+OIDC_ISSUER_URL="${OIDC_BASE}"
 DEMO_APP_URL="${DEMO_APP_URL:-http://${AGW_LB}}"
 
 # ─── Helper ───────────────────────────────────────────────────────────────────
@@ -87,8 +54,7 @@ KC="kubectl --context ${KUBE_CONTEXT}"
 log() { echo ""; echo "=== $1 ==="; }
 
 log "AgentGateway LB: ${AGW_LB}"
-log "IDP:             ${IDP}"
-log "Issuer URL:      ${OIDC_ISSUER_URL}"
+log "Keycloak issuer: ${OIDC_ISSUER_URL}"
 log "App URL:         ${DEMO_APP_URL}"
 
 ###############################################################################
@@ -116,66 +82,16 @@ stringData:
 EOF
 
 ###############################################################################
-# 3. AgentgatewayBackend + HTTPRoute that expose the IdP via the AGW LB
+# 3. Verify Keycloak is reachable through the AGW LB
 #
-# For Keycloak (IDP=keycloak): 03b-keycloak.sh already created
-# `keycloak-backend` and the /realms + /resources HTTPRoutes. We just
-# verify they exist.
-# For Dex (IDP=dex, legacy): we create the backend + /dex HTTPRoute and
-# patch Dex's configmap to use the external issuer.
+# 03b-keycloak.sh creates `keycloak-backend` + the /realms and /resources
+# HTTPRoutes. This script just confirms they exist before wiring ExtAuth.
 ###############################################################################
-if [[ "${IDP}" == "dex" ]]; then
-  log "Creating AgentgatewayBackend + /dex HTTPRoute for Dex"
-  ${KC} apply -n "${AGW_NAMESPACE}" -f - <<EOF
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayBackend
-metadata:
-  name: ${IDP_BACKEND_NAME}
-  namespace: ${AGW_NAMESPACE}
-spec:
-  static:
-    host: ${IDP_SVC_HOST}
-    port: ${IDP_SVC_PORT}
----
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: ${IDP}-route
-  namespace: ${AGW_NAMESPACE}
-spec:
-  parentRefs:
-  - name: agentgateway-hub
-    namespace: ${AGW_NAMESPACE}
-  rules:
-  - matches:
-    - path:
-        type: PathPrefix
-        value: ${IDP_LB_PATH_PREFIX}
-    backendRefs:
-    - group: agentgateway.dev
-      kind: AgentgatewayBackend
-      name: ${IDP_BACKEND_NAME}
-      namespace: ${AGW_NAMESPACE}
-EOF
-
-  log "Patching Dex configmap to use external issuer: ${OIDC_BASE}"
-  CURRENT_CONFIG=$(${KC} -n "${IDP_NAMESPACE}" get configmap dex-config \
-    -o jsonpath='{.data.config\.yaml}')
-  NEW_CONFIG=$(echo "${CURRENT_CONFIG}" \
-    | sed -E "s|^issuer:.*|issuer: ${OIDC_BASE}|")
-  ${KC} -n "${IDP_NAMESPACE}" create configmap dex-config \
-    --from-literal=config.yaml="${NEW_CONFIG}" \
-    --dry-run=client -o yaml | ${KC} apply -f -
-  ${KC} -n "${IDP_NAMESPACE}" rollout restart deployment/dex
-  ${KC} -n "${IDP_NAMESPACE}" rollout status deployment/dex --timeout=120s
-else
-  # Keycloak path — verify 03b-keycloak.sh has run.
-  if ! ${KC} -n "${AGW_NAMESPACE}" get agentgatewaybackend keycloak-backend >/dev/null 2>&1; then
-    echo "ERROR: keycloak-backend not found. Run scripts/03b-keycloak.sh first, or set IDP=dex."
-    exit 1
-  fi
-  log "Keycloak backend + routes already in place (from 03b-keycloak.sh)"
+if ! ${KC} -n "${AGW_NAMESPACE}" get agentgatewaybackend keycloak-backend >/dev/null 2>&1; then
+  echo "ERROR: keycloak-backend not found. Run scripts/03b-keycloak.sh first."
+  exit 1
 fi
+log "Keycloak backend + routes already in place (from 03b-keycloak.sh)"
 
 ###############################################################################
 # 4. Create AuthConfig (OIDC authorization-code flow)
@@ -231,9 +147,10 @@ done
 ###############################################################################
 # 5. Attach AuthConfig to MCP/UI HTTPRoutes (NOT Gateway-wide)
 #
-# We cannot target the whole Gateway because /dex/* must remain
-# unauthenticated — otherwise the OAuth login redirect would itself require
-# a valid session. Instead we enumerate the protected routes by name.
+# We cannot target the whole Gateway because /realms/* and /resources/*
+# (Keycloak) must remain unauthenticated — otherwise the OAuth login
+# redirect would itself require a valid session. Instead we enumerate
+# the protected routes by name.
 # Routes created in later scripts (06, 08, 09) attach to this policy
 # automatically once they exist.
 ###############################################################################
@@ -277,18 +194,11 @@ EOF
 ###############################################################################
 log "ExtAuth configuration complete"
 
-if [[ "${IDP}" == "keycloak" ]]; then
-  TOKEN_PATH="/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token"
-  AUTH_PATH="/realms/${KEYCLOAK_REALM}/protocol/openid-connect/auth"
-  USERNAME_DEMO="demo"
-else
-  TOKEN_PATH="/dex/token"
-  AUTH_PATH="/dex/auth"
-  USERNAME_DEMO="demo@example.com"
-fi
+TOKEN_PATH="/realms/${KEYCLOAK_REALM}/protocol/openid-connect/token"
+AUTH_PATH="/realms/${KEYCLOAK_REALM}/protocol/openid-connect/auth"
 
 echo ""
-echo "=== DEMO FLOWS (IDP=${IDP}) ==="
+echo "=== DEMO FLOWS (Keycloak) ==="
 echo ""
 echo "Issuer / OIDC discovery (reachable from a laptop, no port-forward):"
 echo "  ${OIDC_BASE}/.well-known/openid-configuration"
@@ -296,29 +206,27 @@ echo ""
 echo "--- Flow 1: Browser Login (auth code flow) ---"
 echo "  Open in browser: http://${AGW_LB}/mcp"
 echo "  → Redirected to login at http://${AGW_LB}${AUTH_PATH}?..."
-echo "  → Login with: ${USERNAME_DEMO} / demo-pass"
+echo "  → Login with: demo / demo-pass"
 echo "  → Redirected back to /callback → session established"
 echo "  → MCP tools accessible"
 echo ""
 echo "--- Flow 2: MCP Client Token (password grant / Bearer) ---"
 echo "  TOKEN=\$(curl -s -X POST 'http://${AGW_LB}${TOKEN_PATH}' \\"
 echo "    -d 'grant_type=password' \\"
-echo "    -d 'username=${USERNAME_DEMO}' -d 'password=demo-pass' \\"
+echo "    -d 'username=demo' -d 'password=demo-pass' \\"
 echo "    -d 'client_id=${OIDC_CLIENT_ID}' -d 'client_secret=${OIDC_CLIENT_SECRET}' \\"
-echo "    -d 'scope=openid email profile' | jq -r '.access_token')"
+echo "    -d 'scope=openid email profile' | jq -r '.id_token')"
 echo ""
 echo "  curl -s -H \"Authorization: Bearer \${TOKEN}\" http://${AGW_LB}/mcp"
 echo ""
-if [[ "${IDP}" == "keycloak" ]]; then
-  echo "--- Flow 3 (Keycloak only): client-credentials m2m grant ---"
-  echo "  TOKEN=\$(curl -s -X POST 'http://${AGW_LB}${TOKEN_PATH}' \\"
-  echo "    -d 'grant_type=client_credentials' \\"
-  echo "    -d 'client_id=mcp-service' -d 'client_secret=mcp-service-secret' \\"
-  echo "    | jq -r '.access_token')"
-  echo ""
-fi
+echo "--- Flow 3: client-credentials m2m grant ---"
+echo "  TOKEN=\$(curl -s -X POST 'http://${AGW_LB}${TOKEN_PATH}' \\"
+echo "    -d 'grant_type=client_credentials' \\"
+echo "    -d 'client_id=mcp-service' -d 'client_secret=mcp-service-secret' \\"
+echo "    | jq -r '.access_token')"
+echo ""
 echo "Resources:"
 ${KC} get secret oauth-dex -n "${AGW_NAMESPACE}" -o name 2>/dev/null
-${KC} get agentgatewaybackend "${IDP_BACKEND_NAME}" -n "${AGW_NAMESPACE}" -o name 2>/dev/null
+${KC} get agentgatewaybackend keycloak-backend -n "${AGW_NAMESPACE}" -o name 2>/dev/null
 ${KC} get authconfig oidc-dex -n "${AGW_NAMESPACE}" -o name 2>/dev/null
 ${KC} get enterpriseagentgatewaypolicy oidc-extauth -n "${AGW_NAMESPACE}" -o name 2>/dev/null

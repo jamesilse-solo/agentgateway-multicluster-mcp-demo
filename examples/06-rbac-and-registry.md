@@ -16,7 +16,7 @@ In a real deployment that's a problem: tenant A could discover tenant B's URL an
 
 ## How OAuth audiences solve this
 
-When an identity provider (Dex) issues a JWT, it can stamp the JWT with an **audience** — the intended consumer of the token. The convention is one audience per OAuth client. If tenant-a logs in via the `tenant-a-client` Dex client, the JWT has `aud: tenant-a-client`. Tenant-b logs in via `tenant-b-client`, JWT has `aud: tenant-b-client`.
+When an identity provider (Dex) issues a JWT, it can stamp the JWT with an **audience** — the intended consumer of the token. The convention is one audience per OAuth client. If tenant-a logs in via the `tenant-a-client` Keycloak client, the JWT has `aud: tenant-a-client`. Tenant-b logs in via `tenant-b-client`, JWT has `aud: tenant-b-client`.
 
 The gateway can then declare, per backend, *which audiences it accepts*. A JWT with the wrong audience is rejected at the gateway with HTTP 401 — the upstream tool server never sees it.
 
@@ -69,7 +69,7 @@ spec:
         - "tenant-a-client"      # ← only this audience is allowed
 ```
 
-And in Dex's configmap, two new `staticClients`:
+And in Keycloak's configmap, two new `staticClients`:
 
 ```yaml
 staticClients:
@@ -111,7 +111,7 @@ Four calls, two each from each tenant. The cross-tenant attempts are blocked at 
 
 | Capability | Status |
 |---|---|
-| Per-tenant Dex clients with distinct audiences | ✅ |
+| Per-tenant Keycloak clients with distinct audiences | ✅ |
 | Audience-restricted gateway backend (cross-tenant blocked) | ✅ |
 | **AgentRegistry write-API RBAC** | ❌ — the registry currently runs with `demoAuthEnabled: true`. Switching to OIDC-backed write scopes requires Helm-value changes on the `agentregistry` chart. Out of scope for this example |
 | Per-tool RBAC by JWT role/group claim | ❌ — the per-tenant tool allowlists from Example 2 still operate by *path*. Per-tool filtering keyed on a JWT `groups` claim requires OPA or a custom CEL bundle |
@@ -121,7 +121,7 @@ Four calls, two each from each tenant. The cross-tenant attempts are blocked at 
 ## Run it
 
 ```
-./scripts/05e-rbac-strict.sh         # Add per-tenant Dex clients + audience policies
+./scripts/05e-rbac-strict.sh         # Add per-tenant Keycloak clients + audience policies
 ./examples/06-rbac-and-registry.sh   # Run the four checks
 ./scripts/05e-rbac-strict.sh --cleanup
 ```

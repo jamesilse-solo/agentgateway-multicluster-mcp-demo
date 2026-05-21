@@ -45,7 +45,6 @@ if [[ "${1:-}" == "--cleanup" ]]; then
   ${KC} -n "${AGW_NAMESPACE}" get enterpriseagentgatewaypolicy oidc-extauth -o json 2>/dev/null \
     | jq 'del(.spec.traffic.extProc)' \
     | ${KC} apply -f - 2>/dev/null || true
-  ${KC} -n "${AGW_NAMESPACE}" delete gatewayextension mcp-guardrails --ignore-not-found
   ${KC} -n "${AGW_NAMESPACE}" delete svc ext-proc-guardrail --ignore-not-found
   ${KC} -n "${AGW_NAMESPACE}" delete deploy ext-proc-guardrail --ignore-not-found
   ${KC} -n "${AGW_NAMESPACE}" delete configmap ext-proc-guardrail --ignore-not-found
@@ -59,17 +58,32 @@ fi
 log "Creating ExtProc ConfigMap"
 
 SERVER_PY=$(cat <<'PY'
-"""MCP ExtProc guardrail — schema validation + regex content policy."""
-import json, logging, re, sys
-from concurrent import futures
+"""MCP ExtProc guardrail — schema validation + regex content policy.
 
-try:
-    import grpc
-    from envoy.service.ext_proc.v3 import external_processor_pb2 as pb
-    from envoy.service.ext_proc.v3 import external_processor_pb2_grpc as pb_grpc
-except ImportError as e:
-    print(f"missing deps: {e}. install: pip install grpcio envoy-data-plane")
-    sys.exit(1)
+AgentGateway speaks the standard Envoy ext_proc gRPC protocol, so this
+server implements envoy.service.ext_proc.v3.ExternalProcessor. The
+betterproto/grpclib bindings (envoy_data_plane>=0.8.1) are used since
+the legacy pb2-style API was removed in envoy_data_plane v2.
+"""
+import asyncio, json, logging, re
+
+from envoy_data_plane.envoy.service.ext_proc.v3 import (
+    ExternalProcessorBase,
+    ProcessingRequest,
+    ProcessingResponse,
+    ImmediateResponse,
+    BodyResponse,
+    HeadersResponse,
+    HeaderMutation,
+    CommonResponse,
+    CommonResponseResponseStatus,
+    BodyMutation,
+    StreamedBodyResponse,
+)
+from envoy_data_plane.envoy.config.core.v3 import HeaderValue, HeaderValueOption
+from envoy_data_plane.envoy.type.v3 import HttpStatus, StatusCode
+from grpclib.server import Server
+from typing import AsyncIterator
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("ext-proc")
@@ -83,12 +97,15 @@ TOOL_SCHEMAS = {
 }
 
 # ----- Content-policy regex patterns (request bodies) ----------------------
+# Tightened so MCP envelope metadata (e.g. "2024-11-05" protocolVersion or
+# session UUIDs) doesn't false-positive on the PII patterns.
 PATTERNS = [
-    (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),               "PII:SSN"),
-    (re.compile(r"\b(?:\d[ -]?){13,16}\b"),              "PII:credit-card"),
-    (re.compile(r"(?i)ignore (all )?previous instructions"), "prompt-injection"),
-    (re.compile(r"<\|im_start\|>|<\|system\|>"),         "prompt-injection-marker"),
-    (re.compile(r"(?i)exfiltrate|exfil-?data"),          "exfiltration"),
+    (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),                          "PII:SSN"),
+    # Credit card: exactly 4 groups of 4 digits, separated by - or space, with word boundaries
+    (re.compile(r"\b\d{4}[- ]\d{4}[- ]\d{4}[- ]\d{4}\b"),            "PII:credit-card"),
+    (re.compile(r"(?i)ignore (all )?previous instructions"),         "prompt-injection"),
+    (re.compile(r"<\|im_start\|>|<\|system\|>"),                     "prompt-injection-marker"),
+    (re.compile(r"(?i)exfiltrate|exfil-?data"),                      "exfiltration"),
 ]
 
 
@@ -109,9 +126,9 @@ def check_body(raw_bytes):
         obj = json.loads(body)
     except Exception:
         return False, None
-
     if not isinstance(obj, dict):
         return False, None
+
     if obj.get("method") == "tools/call":
         params = obj.get("params", {}) or {}
         name = params.get("name")
@@ -130,50 +147,90 @@ def check_body(raw_bytes):
     return False, None
 
 
-def make_block_response(reason):
-    """Build an ImmediateResponse with a JSON-RPC error body."""
-    imm = pb.ImmediateResponse()
-    imm.status.code = 400
-    payload = {
+def make_block_response(reason: str) -> ImmediateResponse:
+    """ImmediateResponse: HTTP 400 + JSON-RPC error body. Short-circuits the
+    upstream entirely (gateway returns this body to the original caller)."""
+    payload = json.dumps({
         "jsonrpc": "2.0",
         "id": None,
         "error": {"code": -32602, "message": f"blocked by gateway guardrail ({reason})"},
-    }
-    imm.body = json.dumps(payload).encode()
-    h = imm.headers.set_headers.add()
-    h.header.key = "content-type"
-    h.header.raw_value = b"application/json"
-    return imm
+    }).encode()
+    return ImmediateResponse(
+        status=HttpStatus(code=StatusCode.BadRequest),
+        body=payload,
+        headers=HeaderMutation(
+            set_headers=[
+                HeaderValueOption(
+                    header=HeaderValue(key="content-type", raw_value=b"application/json")
+                )
+            ]
+        ),
+    )
 
 
-class GuardExtProc(pb_grpc.ExternalProcessorServicer):
-    def Process(self, request_iterator, context):
-        for req in request_iterator:
-            resp = pb.ProcessingResponse()
-            if req.HasField("request_headers"):
-                resp.request_headers.CopyFrom(pb.HeadersResponse())
-            elif req.HasField("request_body"):
+def echo_body(body: bytes, end_of_stream: bool) -> BodyResponse:
+    """Pass-through body response. AGW is always in STREAMED mode, so we must
+    return the body bytes via BodyMutation.StreamedResponse — returning a bare
+    BodyResponse() makes AGW wait forever for the body that should be forwarded."""
+    return BodyResponse(
+        response=CommonResponse(
+            status=CommonResponseResponseStatus.CONTINUE,
+            body_mutation=BodyMutation(
+                streamed_response=StreamedBodyResponse(
+                    body=body,
+                    end_of_stream=end_of_stream,
+                )
+            ),
+        )
+    )
+
+
+import betterproto2 as betterproto
+
+class Guard(ExternalProcessorBase):
+    async def process(
+        self,
+        process_iterator: AsyncIterator[ProcessingRequest],
+    ) -> AsyncIterator[ProcessingResponse]:
+        async for req in process_iterator:
+            # Find which oneof variant is set on this request.
+            which = betterproto.which_one_of(req, "request")
+            kind = which[0] if which else ""
+            log.info("ext_proc recv kind=%s", kind)
+
+            CONTINUE_HEADERS = HeadersResponse()
+
+            if kind == "request_body":
                 body = req.request_body.body
+                eos = req.request_body.end_of_stream
                 blocked, reason = check_body(body)
                 if blocked:
                     log.info("BLOCKED: %s", reason)
-                    resp.immediate_response.CopyFrom(make_block_response(reason))
+                    yield ProcessingResponse(immediate_response=make_block_response(reason))
                 else:
-                    resp.request_body.CopyFrom(pb.BodyResponse())
-            elif req.HasField("response_headers"):
-                resp.response_headers.CopyFrom(pb.HeadersResponse())
-            elif req.HasField("response_body"):
-                resp.response_body.CopyFrom(pb.BodyResponse())
-            yield resp
+                    yield ProcessingResponse(request_body=echo_body(body, eos))
+            elif kind == "request_headers":
+                yield ProcessingResponse(request_headers=CONTINUE_HEADERS)
+            elif kind == "response_headers":
+                yield ProcessingResponse(response_headers=CONTINUE_HEADERS)
+            elif kind == "response_body":
+                # Pass response bodies straight through unchanged.
+                body = req.response_body.body
+                eos = req.response_body.end_of_stream
+                yield ProcessingResponse(response_body=echo_body(body, eos))
+            else:
+                yield ProcessingResponse(request_headers=CONTINUE_HEADERS)
+
+
+async def serve():
+    server = Server([Guard()])
+    await server.start("0.0.0.0", 9001)
+    log.info("ext-proc guardrail listening on :9001 (schema + regex)")
+    await server.wait_closed()
 
 
 if __name__ == "__main__":
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
-    pb_grpc.add_ExternalProcessorServicer_to_server(GuardExtProc(), server)
-    server.add_insecure_port("0.0.0.0:9001")
-    server.start()
-    log.info("ext-proc guardrail listening on :9001 (schema + regex)")
-    server.wait_for_termination()
+    asyncio.run(serve())
 PY
 )
 
@@ -204,12 +261,12 @@ spec:
         image: python:3.12-slim
         command: ["/bin/sh", "-c"]
         args:
-        - pip install --quiet grpcio envoy-data-plane && python /app/server.py
+        - pip install --quiet 'envoy_data_plane==2.0.0b9' grpclib && python /app/server.py
         ports:
         - { containerPort: 9001, name: grpc }
         readinessProbe:
           tcpSocket: { port: 9001 }
-          initialDelaySeconds: 30
+          initialDelaySeconds: 45
           periodSeconds: 5
         volumeMounts:
         - { name: code, mountPath: /app }
@@ -234,33 +291,15 @@ ${KC} -n "${AGW_NAMESPACE}" rollout restart deploy/ext-proc-guardrail 2>/dev/nul
 ${KC} -n "${AGW_NAMESPACE}" rollout status deploy/ext-proc-guardrail --timeout=120s
 
 ###############################################################################
-# 3. GatewayExtension + wire into oidc-extauth policy
+# 3. Wire ExtProc directly into oidc-extauth policy
+#
+# In this AGW Enterprise CRD the ext_proc backend is referenced directly
+# from the policy — no separate GatewayExtension wrapper.
 ###############################################################################
-log "Creating GatewayExtension mcp-guardrails"
-${KC} apply -n "${AGW_NAMESPACE}" -f - <<'EOF'
-apiVersion: enterpriseagentgateway.solo.io/v1alpha1
-kind: GatewayExtension
-metadata:
-  name: mcp-guardrails
-  namespace: agentgateway-system
-spec:
-  extProc:
-    grpcService:
-      backendRef:
-        name: ext-proc-guardrail
-        namespace: agentgateway-system
-        port: 9001
-    processingMode:
-      requestHeaderMode: SEND
-      requestBodyMode: BUFFERED
-      responseHeaderMode: SEND
-      responseBodyMode: NONE
-EOF
-
-log "Attaching GatewayExtension to oidc-extauth policy"
+log "Attaching ExtProc to oidc-extauth policy (direct backendRef)"
 ${KC} -n "${AGW_NAMESPACE}" patch enterpriseagentgatewaypolicy oidc-extauth \
   --type='merge' \
-  -p '{"spec":{"traffic":{"extProc":{"extensionRef":{"name":"mcp-guardrails"}}}}}'
+  -p '{"spec":{"traffic":{"extProc":{"backendRef":{"name":"ext-proc-guardrail","namespace":"'"${AGW_NAMESPACE}"'","port":9001}}}}}'
 
 log "ExtProc guardrail live"
 cat <<EOF

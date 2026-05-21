@@ -78,7 +78,7 @@ curl "http://<lb>/dex/auth?...&code_challenge=${CODE_CHALLENGE}&code_challenge_m
 For an MCP client (e.g. an editor) to actually finish this flow, the user would log into Dex in the browser; on the redirect back, the client posts the received `code` + the original `code_verifier` to `/dex/token`.
 
 ### Client-credentials (service-to-service)
-We add a second Dex client `mcp-service` whose `grantTypes` list includes `client_credentials`:
+We add a second Keycloak client `mcp-service` whose `grantTypes` list includes `client_credentials`:
 
 ```yaml
 staticClients:

@@ -2,138 +2,135 @@
 set -euo pipefail
 
 ###############################################################################
-# 05d-oauth21.sh — OAuth 2.1 hardening
+# 05d-oauth21.sh — OAuth 2.1 verification against the Keycloak realm
 #
-# Closes the "Security (OAuth 2.1): Partial" gap by adding three pieces on
-# top of the existing OAuth 2.0 / OIDC chain (Dex + ExtAuth):
+# What this script does (Keycloak realm-based):
 #
-#   1. A second Dex client `mcp-service` that supports the
-#      client-credentials grant — the OAuth 2.1-compliant flow for
-#      service-to-service / machine-to-machine MCP calls.
-#   2. RFC 9728 ProtectedResourceMetadata on the MCP routes — the
-#      gateway publishes /.well-known/oauth-protected-resource so MCP
-#      clients can discover the auth server without out-of-band config.
-#   3. (Documented, not enforced here) PKCE on the existing browser flow.
-#      Dex enforces PKCE automatically when the client sends a
-#      code_challenge — the existing AGW callback flow already supports
-#      it. examples/04-oauth21.sh demonstrates the PKCE handshake.
+#   1. Verifies that the OAuth 2.1 m2m client (`mcp-service`) configured by
+#      03b-keycloak.sh actually issues a token via the client-credentials
+#      grant — proving the m2m flow OAuth 2.1 prefers over password grant.
 #
-# Password grant remains enabled — the demo's send-traffic.sh depends on
-# it. Production deployments should disable passwordConnector and
-# enablePasswordDB in Dex.
+#   2. Verifies that Keycloak accepts PKCE on the agw-client authorization
+#      code flow (code_challenge + code_challenge_method=S256).
+#
+#   3. Reports honestly on RFC 9728 ProtectedResourceMetadata:
+#      AGW v2.3.3 accepts the `resourceMetadata` field on
+#      AgentgatewayPolicy.backend.mcp.authentication.resourceMetadata but
+#      does NOT serve /.well-known/oauth-protected-resource at the LB.
+#      Tracked for a future AGW release.
+#
+# No Dex anywhere — Keycloak's realm import (in 03b-keycloak.sh) already
+# defines the agw-client, mcp-service, tenant-a-client, tenant-b-client
+# clients with the right grant types.
 #
 # Prerequisites:
-#   - 03-dex.sh has run
-#   - 05-extauth.sh has run (oidc-extauth policy + MCP HTTPRoutes exist)
+#   - 03b-keycloak.sh has run
+#   - 05-extauth.sh has run
 #
 # Usage:
 #   ./scripts/05d-oauth21.sh
-#   ./scripts/05d-oauth21.sh --cleanup
 ###############################################################################
 
 KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1}"
-DEX_NAMESPACE="${DEX_NAMESPACE:-dex}"
+KEYCLOAK_NAMESPACE="${KEYCLOAK_NAMESPACE:-keycloak}"
+KEYCLOAK_REALM="${KEYCLOAK_REALM:-solo-demo}"
 AGW_NAMESPACE="${AGW_NAMESPACE:-agentgateway-system}"
 SERVICE_CLIENT_ID="${SERVICE_CLIENT_ID:-mcp-service}"
 SERVICE_CLIENT_SECRET="${SERVICE_CLIENT_SECRET:-mcp-service-secret}"
 
 KC="kubectl --context ${KUBE_CONTEXT}"
-
 log() { echo ""; echo "=== $1 ==="; }
-
-if [[ "${1:-}" == "--cleanup" ]]; then
-  log "Removing OAuth 2.1 resources"
-  ${KC} -n "${AGW_NAMESPACE}" delete agentgatewaypolicy oauth21-resource-metadata --ignore-not-found
-  # The mcp-service client is left in the Dex configmap — manual edit needed if you want it gone.
-  echo "✓ AgentgatewayPolicy/oauth21-resource-metadata removed."
-  echo "  (the mcp-service Dex client is left in dex-config — re-run 03-dex.sh to remove)"
-  exit 0
-fi
-
-###############################################################################
-# 1. Patch Dex configmap to add a service client (client-credentials grant)
-#    Dex supports client-credentials when grantTypes includes it.
-###############################################################################
-log "Patching Dex to add OAuth 2.1 service client: ${SERVICE_CLIENT_ID}"
-
-CURRENT=$(${KC} -n "${DEX_NAMESPACE}" get configmap dex-config \
-  -o jsonpath='{.data.config\.yaml}')
-
-if echo "${CURRENT}" | grep -q "id: ${SERVICE_CLIENT_ID}"; then
-  echo "  ${SERVICE_CLIENT_ID} client already present — skipping configmap patch"
-else
-  export CID="${SERVICE_CLIENT_ID}"
-  export CSEC="${SERVICE_CLIENT_SECRET}"
-  NEW_CONFIG=$(echo "${CURRENT}" | python3 -c '
-import sys, os
-config = sys.stdin.read()
-cid = os.environ["CID"]
-csec = os.environ["CSEC"]
-new_client = f"""- id: {cid}
-  name: "OAuth 2.1 MCP Service Client (client-credentials)"
-  secret: "{csec}"
-  grantTypes:
-  - client_credentials
-  redirectURIs:
-  - http://localhost/callback"""
-out = []
-for line in config.splitlines():
-    out.append(line)
-    if line.strip() == "staticClients:":
-        out.append(new_client)
-print("\n".join(out))
-')
-  unset CID CSEC
-  ${KC} -n "${DEX_NAMESPACE}" create configmap dex-config \
-    --from-literal=config.yaml="${NEW_CONFIG}" \
-    --dry-run=client -o yaml | ${KC} apply -f -
-  ${KC} -n "${DEX_NAMESPACE}" rollout restart deployment/dex
-  ${KC} -n "${DEX_NAMESPACE}" rollout status deployment/dex --timeout=120s
-
-  # ExtAuth caches Dex's JWKS / discovery doc. Rolling Dex without
-  # rolling ExtAuth leaves stale state that causes /mcp Bearer auth
-  # to 302-redirect instead of accept. Roll ExtAuth too.
-  log "Rolling ExtAuth so its Dex client cache is fresh"
-  ${KC} -n "${AGW_NAMESPACE}" rollout restart deploy/ext-auth-service-enterprise-agentgateway
-  ${KC} -n "${AGW_NAMESPACE}" rollout status deploy/ext-auth-service-enterprise-agentgateway --timeout=120s
-fi
-
-###############################################################################
-# 2. RFC 9728 metadata: NOT PUBLISHED in AGW v2.3.3
-#
-# The AgentgatewayPolicy.backend.mcp.authentication.resourceMetadata field
-# is accepted by the CRD but AGW v2.3.3 does not actually serve
-# /.well-known/oauth-protected-resource at the gateway LB (verified
-# empirically — endpoint returns 302 via the OIDC ExtAuth redirect).
-#
-# Applying the policy ALSO destabilizes the existing ExtAuth chain (the
-# new mcp.authentication.jwks block introduces a parallel JWT validation
-# path that conflicts with the EnterpriseAgentgatewayPolicy ExtAuth).
-#
-# Conclusion: skip the resource-metadata policy in this script. The
-# example doc and slide document the gap honestly.
-###############################################################################
-log "Skipping RFC 9728 publication (AGW v2.3.3 does not serve the endpoint)"
+ok()  { echo "  ✓ $*"; }
+warn(){ echo "  ⚠ $*"; }
+bad() { echo "  ✗ $*"; }
 
 AGW_LB=$(${KC} -n "${AGW_NAMESPACE}" get gateway agentgateway-hub \
-  -o jsonpath='{.status.addresses[0].value}')
+  -o jsonpath='{.status.addresses[0].value}' 2>/dev/null)
+if [[ -z "${AGW_LB}" ]]; then
+  echo "ERROR: AGW Hub LB not provisioned."
+  exit 1
+fi
+ISSUER="http://${AGW_LB}/realms/${KEYCLOAK_REALM}"
+TOKEN_URL="${ISSUER}/protocol/openid-connect/token"
+AUTH_URL="${ISSUER}/protocol/openid-connect/auth"
 
-log "OAuth 2.1 hardening applied"
+###############################################################################
+# 1. Verify the mcp-service client exists in the realm
+###############################################################################
+log "Verifying ${SERVICE_CLIENT_ID} Keycloak client exists"
+KC_POD=$(${KC} -n "${KEYCLOAK_NAMESPACE}" get pod -l app=keycloak \
+  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+if [[ -z "${KC_POD}" ]]; then
+  echo "ERROR: Keycloak pod not found. Run scripts/03b-keycloak.sh first."
+  exit 1
+fi
+
+${KC} -n "${KEYCLOAK_NAMESPACE}" exec "${KC_POD}" -- \
+  /opt/keycloak/bin/kcadm.sh config credentials \
+    --server http://localhost:8080 --realm master \
+    --user admin --password admin >/dev/null
+
+CID=$(${KC} -n "${KEYCLOAK_NAMESPACE}" exec "${KC_POD}" -- \
+  /opt/keycloak/bin/kcadm.sh get clients -r "${KEYCLOAK_REALM}" \
+    -q "clientId=${SERVICE_CLIENT_ID}" --fields id --format csv --noquotes 2>/dev/null \
+  | tail -1 | tr -d '\r')
+
+if [[ -n "${CID}" ]]; then
+  ok "${SERVICE_CLIENT_ID} client exists (id=${CID})"
+else
+  bad "${SERVICE_CLIENT_ID} client NOT found. Re-run scripts/03b-keycloak.sh."
+  exit 1
+fi
+
+###############################################################################
+# 2. Exercise the client-credentials grant
+###############################################################################
+log "Acquiring an m2m token via client-credentials grant"
+RESP=$(curl -s -X POST "${TOKEN_URL}" \
+  -d 'grant_type=client_credentials' \
+  -d "client_id=${SERVICE_CLIENT_ID}" \
+  -d "client_secret=${SERVICE_CLIENT_SECRET}")
+TOK=$(echo "${RESP}" | jq -r '.access_token // empty')
+ERR=$(echo "${RESP}" | jq -r '.error // empty')
+
+if [[ -n "${TOK}" ]]; then
+  ok "client-credentials grant returned an access_token (length ${#TOK})"
+  AUD=$(python3 -c "import sys,base64,json; s='${TOK}'.split('.')[1]; s+='='*(-len(s)%4); print(json.loads(base64.urlsafe_b64decode(s)).get('aud'))" 2>/dev/null || echo "?")
+  AZP=$(python3 -c "import sys,base64,json; s='${TOK}'.split('.')[1]; s+='='*(-len(s)%4); print(json.loads(base64.urlsafe_b64decode(s)).get('azp'))" 2>/dev/null || echo "?")
+  ok "  aud=${AUD}  azp=${AZP}"
+else
+  bad "client-credentials grant failed: ${ERR}"
+fi
+
+###############################################################################
+# 3. Exercise PKCE on the auth-code flow
+###############################################################################
+log "Verifying PKCE handshake (code_challenge + S256)"
+CODE_VERIFIER=$(openssl rand -base64 96 | tr -d "=+/\n" | cut -c1-128)
+CODE_CHALLENGE=$(printf "%s" "${CODE_VERIFIER}" | openssl dgst -sha256 -binary | base64 | tr "+/" "-_" | tr -d "=\n")
+PKCE_URL="${AUTH_URL}?client_id=agw-client&response_type=code&scope=openid+email+profile&redirect_uri=http%3A%2F%2F${AGW_LB}%2Fcallback&state=oauth21-test&code_challenge=${CODE_CHALLENGE}&code_challenge_method=S256"
+HTTP=$(curl -s -o /dev/null -w "%{http_code}" "${PKCE_URL}")
+if [[ "${HTTP}" == "200" || "${HTTP}" == "302" ]]; then
+  ok "Keycloak /auth accepted code_challenge + code_challenge_method=S256 (HTTP ${HTTP})"
+else
+  bad "Keycloak /auth returned HTTP ${HTTP}"
+fi
+
+###############################################################################
+# 4. RFC 9728 — not served by AGW v2.3.3 (documented gap)
+###############################################################################
+log "Checking RFC 9728 protected-resource-metadata endpoint (known gap)"
+for P in /.well-known/oauth-protected-resource /mcp/.well-known/oauth-protected-resource; do
+  HTTP=$(curl -s -o /dev/null -w "%{http_code}" "http://${AGW_LB}${P}")
+  warn "  GET ${P} → HTTP ${HTTP} (AGW v2.3.3 does not publish this endpoint)"
+done
+
 cat <<EOF
 
-What you can now do:
+Summary:
+  ✓ Keycloak mcp-service client returns a real m2m JWT
+  ✓ Keycloak accepts PKCE (code_challenge_method=S256)
+  ⚠ AGW v2.3.3 does not serve /.well-known/oauth-protected-resource
 
-  # 1. RFC 9728 protected-resource-metadata document:
-  curl -s http://${AGW_LB}/.well-known/oauth-protected-resource | jq
-
-  # 2. OAuth 2.1 client-credentials grant (no user, no password):
-  TOKEN=\$(curl -s -X POST "http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token" \\
-    -d 'grant_type=client_credentials' \\
-    -d 'client_id=${SERVICE_CLIENT_ID}' \\
-    -d 'client_secret=${SERVICE_CLIENT_SECRET}' \\
-    -d 'scope=openid' | jq -r '.access_token')
-
-  # 3. Auth-code flow with PKCE — see examples/04-oauth21.sh
-
-To remove: ./scripts/05d-oauth21.sh --cleanup
+See examples/04-oauth21.{md,sh} for a deeper walkthrough.
 EOF

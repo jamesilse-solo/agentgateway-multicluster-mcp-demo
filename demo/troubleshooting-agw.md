@@ -228,7 +228,7 @@ If Step 0's `curl` returned a clean 200 but MCP Inspector still fails, the gatew
 | Inspector behaviour | Fix |
 |---|---|
 | `Unexpected content type: text/html; charset=utf-8` | URL field is missing `/mcp`. Set it to `http://<agw-lb>/mcp`, not `http://<agw-lb>`. |
-| `Unregistered redirect_uri ('http://<agw-lb>/callback')` on the OAuth tab | Dex's `staticClients` redirectURIs list doesn't include the current LB hostname. Re-run `scripts/05-extauth.sh` (it patches the Dex configmap with whatever LB is live) or manually edit `configmap/dex-config` and `kubectl rollout restart deployment/dex -n dex`. |
+| `Unregistered redirect_uri ('http://<agw-lb>/callback')` on the OAuth tab | Dex's `staticClients` redirectURIs list doesn't include the current LB hostname. Re-run `scripts/05-extauth.sh` (it patches the Keycloak realm with whatever LB is live) or manually edit `configmap/dex-config` and `kubectl rollout restart deployment/dex -n dex`. |
 | Bearer token expired between login and click | Re-acquire the token in the same shell that's running `npx @modelcontextprotocol/inspector`; Dex tokens default to short lifetimes. |
 | Browser cached an old auth state (esp. after switching tabs between OAuth ↔ Custom Headers) | Click "Disconnect" in the Inspector UI, refresh the browser tab, paste the token again (or restart the OAuth flow), reconnect. |
 | Either Inspector tab works in `curl` but Inspector still errors out | Make sure you're picking **Connection Type: via proxy** in Inspector — direct-connect mode has stricter content-type handling. |

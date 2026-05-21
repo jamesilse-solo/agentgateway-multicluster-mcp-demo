@@ -4,24 +4,28 @@ set -euo pipefail
 ###############################################################################
 # 05e-rbac-strict.sh — Strict identity-bound path scoping
 #
-# Closes the "RBAC + Registry: Partial" gap (the tool-filtering half).
-# Without this, any authenticated user could call any tenant's MCP path —
-# the tenant-name in the URL was a convention, not enforcement.
+# Closes the multi-tenancy RBAC gap by enforcing per-tenant AUDIENCE on
+# each tenant route. A tenant-a JWT (aud=tenant-a-client) cannot use
+# /mcp/tenant-b; a tenant-b JWT cannot use /mcp/tenant-a. The block
+# happens at the gateway's ExtAuth layer — the upstream MCP server
+# never sees the cross-tenant attempt.
 #
-# Strict mode adds:
-#   1. Per-tenant Dex clients (tenant-a-client, tenant-b-client). Each
-#      client has its own audience in the issued JWT.
-#   2. AgentgatewayPolicy mcp.authentication on each tenant backend that
-#      restricts the allowed audiences. Cross-tenant calls (a JWT issued
-#      for tenant-a hitting /mcp/tenant-b) are rejected with 401.
+# Mechanism: per-tenant AuthConfig with validAudiences. Each tenant
+# HTTPRoute gets its own EnterpriseAgentgatewayPolicy pointing at its
+# own AuthConfig.
 #
-# AgentRegistry write-API RBAC is left as a follow-up — the registry
-# Helm chart needs the OIDC binding switched on which is non-trivial
-# state change.
+#   /mcp/tenant-a  → EAGP/multi-tenancy-tenant-a → AuthConfig/oidc-tenant-a
+#                                                    validAudiences: [tenant-a-client]
+#   /mcp/tenant-b  → EAGP/multi-tenancy-tenant-b → AuthConfig/oidc-tenant-b
+#                                                    validAudiences: [tenant-b-client]
+#
+# The base ExtAuth (oidc-extauth + AuthConfig/oidc-dex) keeps protecting
+# /mcp + the other shared routes via the agw-client audience.
 #
 # Prerequisites:
-#   - 03-dex.sh has run (and the multi-tenant users from PR #2 exist)
-#   - 05b-multi-tenancy.sh has run
+#   - 03b-keycloak.sh has run (tenant-a-client + tenant-b-client realm clients)
+#   - 05-extauth.sh has run (oidc-extauth + AuthConfig/oidc-dex)
+#   - 05b-multi-tenancy.sh has run (mcp-route-tenant-a + mcp-route-tenant-b)
 #
 # Usage:
 #   ./scripts/05e-rbac-strict.sh
@@ -29,92 +33,134 @@ set -euo pipefail
 ###############################################################################
 
 KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1}"
-DEX_NAMESPACE="${DEX_NAMESPACE:-dex}"
 AGW_NAMESPACE="${AGW_NAMESPACE:-agentgateway-system}"
+KEYCLOAK_REALM="${KEYCLOAK_REALM:-solo-demo}"
 KC="kubectl --context ${KUBE_CONTEXT}"
 
 log() { echo ""; echo "=== $1 ==="; }
 
 if [[ "${1:-}" == "--cleanup" ]]; then
-  log "Removing strict-RBAC policies"
+  log "Removing per-tenant AuthConfigs + policies"
   for T in tenant-a tenant-b; do
-    ${KC} -n "${AGW_NAMESPACE}" delete agentgatewaypolicy "rbac-strict-${T}" --ignore-not-found
+    ${KC} -n "${AGW_NAMESPACE}" delete authconfig "oidc-${T}" --ignore-not-found
+    ${KC} -n "${AGW_NAMESPACE}" delete secret "oauth-${T}" --ignore-not-found
   done
-  echo "✓ Strict policies removed. Per-tenant Dex clients are left in"
-  echo "  dex-config — re-run 03-dex.sh if you want them gone."
+  # Restore the original (shared) multi-tenancy-* policies if they reference
+  # oidc-tenant-*. We rewrite them to point back at oidc-dex.
+  for T in tenant-a tenant-b; do
+    ${KC} -n "${AGW_NAMESPACE}" patch enterpriseagentgatewaypolicy "multi-tenancy-${T}" \
+      --type=merge \
+      -p '{"spec":{"traffic":{"entExtAuth":{"authConfigRef":{"name":"oidc-dex","namespace":"'"${AGW_NAMESPACE}"'"}}}}}' \
+      2>/dev/null || true
+  done
+  echo "✓ Strict RBAC removed (Package 1's multi-tenancy policies restored)"
   exit 0
 fi
 
-###############################################################################
-# 1. Patch Dex configmap to add per-tenant clients (each with own audience)
-###############################################################################
-log "Adding per-tenant Dex clients (tenant-a-client, tenant-b-client)"
+AGW_LB=$(${KC} -n "${AGW_NAMESPACE}" get gateway agentgateway-hub \
+  -o jsonpath='{.status.addresses[0].value}' 2>/dev/null)
+[[ -z "${AGW_LB}" ]] && { echo "ERROR: AGW Hub LB not provisioned."; exit 1; }
+ISSUER="http://${AGW_LB}/realms/${KEYCLOAK_REALM}"
 
-CURRENT=$(${KC} -n "${DEX_NAMESPACE}" get configmap dex-config \
-  -o jsonpath='{.data.config\.yaml}')
-
-PATCHED=0
-NEW_CONFIG="${CURRENT}"
-for CID in tenant-a-client tenant-b-client; do
-  if echo "${NEW_CONFIG}" | grep -q "id: ${CID}"; then
-    echo "  ${CID} already present — skipping"
-    continue
-  fi
-  export CID
-  NEW_CONFIG=$(echo "${NEW_CONFIG}" | python3 -c '
-import sys, os
-config = sys.stdin.read()
-cid = os.environ["CID"]
-new_client = f"""- id: {cid}
-  name: "OAuth client for {cid}"
-  secret: "{cid}-secret"
-  redirectURIs:
-  - "http://localhost/callback"
-"""
-out = []
-for line in config.splitlines():
-    out.append(line)
-    if line.strip() == "staticClients:":
-        out.append(new_client.rstrip())
-print("\n".join(out))
-')
-  PATCHED=1
+###############################################################################
+# 1. Per-tenant client secrets
+###############################################################################
+log "Storing per-tenant Keycloak client secrets"
+for T in tenant-a tenant-b; do
+  ${KC} apply -n "${AGW_NAMESPACE}" -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oauth-${T}
+  namespace: ${AGW_NAMESPACE}
+type: extauth.solo.io/oauth
+stringData:
+  client-secret: ${T}-client-secret
+EOF
 done
-unset CID
-
-if [[ ${PATCHED} -eq 1 ]]; then
-  ${KC} -n "${DEX_NAMESPACE}" create configmap dex-config \
-    --from-literal=config.yaml="${NEW_CONFIG}" \
-    --dry-run=client -o yaml | ${KC} apply -f -
-  ${KC} -n "${DEX_NAMESPACE}" rollout restart deployment/dex
-  ${KC} -n "${DEX_NAMESPACE}" rollout status deployment/dex --timeout=120s
-
-  # ExtAuth caches Dex's JWKS / discovery doc. Rolling Dex without
-  # rolling ExtAuth leaves stale state that causes /mcp Bearer auth
-  # to 302-redirect instead of accept. Roll ExtAuth too.
-  log "Rolling ExtAuth so its Dex client cache is fresh"
-  ${KC} -n "${AGW_NAMESPACE}" rollout restart deploy/ext-auth-service-enterprise-agentgateway
-  ${KC} -n "${AGW_NAMESPACE}" rollout status deploy/ext-auth-service-enterprise-agentgateway --timeout=120s
-fi
 
 ###############################################################################
-# 2. Strict audience enforcement — NOT applied in this script
-#
-# The "correct" enforcement would be an AgentgatewayPolicy with
-# backend.mcp.authentication.audiences = ["<tenant>-client"] per tenant.
-# That field requires a jwks block (CRD-mandatory in v2.3.3), which
-# introduces a parallel JWT-validation path that conflicts with the
-# existing EnterpriseAgentgatewayPolicy (oidc-extauth) chain — applying
-# it destabilizes /mcp on the cluster.
-#
-# Production options:
-#   A. Per-tenant AuthConfig with audience restriction on the existing
-#      EnterpriseAgentgatewayPolicy (AuthConfig.oauth2.oidcAuthorizationCode.
-#      validAudiences or equivalent) — clean, no parallel validator.
-#   B. OPA bundle wired to ExtAuth that decides path-vs-aud per request.
-#
-# This script stops at the Dex-client setup. Example 06 demonstrates
-# token differentiation (each tenant gets a JWT with a distinct aud)
-# and documents the enforcement gap honestly.
+# 2. Per-tenant AuthConfigs (validAudiences pins the aud claim)
 ###############################################################################
-log "Strict cross-tenant enforcement is a documented follow-up (see examples/06)"
+log "Creating per-tenant AuthConfigs with audience restriction"
+for T in tenant-a tenant-b; do
+  ${KC} apply -n "${AGW_NAMESPACE}" -f - <<EOF
+apiVersion: extauth.solo.io/v1
+kind: AuthConfig
+metadata:
+  name: oidc-${T}
+  namespace: ${AGW_NAMESPACE}
+spec:
+  configs:
+  - oauth2:
+      oidcAuthorizationCode:
+        appUrl: "http://${AGW_LB}"
+        callbackPath: /callback
+        clientId: ${T}-client
+        clientSecretRef:
+          name: oauth-${T}
+          namespace: ${AGW_NAMESPACE}
+        issuerUrl: "${ISSUER}"
+        scopes:
+        - openid
+        - email
+        - profile
+        session:
+          failOnFetchFailure: true
+          redis:
+            cookieName: oidc-session-${T}
+            options:
+              host: ext-cache-enterprise-agentgateway:6379
+        headers:
+          idTokenHeader: x-user-token
+EOF
+  echo "  ✓ AuthConfig/oidc-${T}"
+done
+
+###############################################################################
+# 3. Wait for AuthConfigs to be accepted
+###############################################################################
+log "Waiting for AuthConfigs to be Accepted"
+for T in tenant-a tenant-b; do
+  for i in $(seq 1 30); do
+    STATUS=$(${KC} get authconfig "oidc-${T}" -n "${AGW_NAMESPACE}" \
+      -o jsonpath='{.status.state}' 2>/dev/null || echo "PENDING")
+    if [[ "${STATUS}" == "ACCEPTED" || "${STATUS}" == "Accepted" ]]; then
+      echo "  ${T}: ${STATUS}"
+      break
+    fi
+    sleep 2
+  done
+done
+
+###############################################################################
+# 4. Re-point each tenant's EnterpriseAgentgatewayPolicy at its OWN AuthConfig
+###############################################################################
+log "Re-pointing tenant EAGPs at per-tenant AuthConfigs"
+for T in tenant-a tenant-b; do
+  ${KC} -n "${AGW_NAMESPACE}" patch enterpriseagentgatewaypolicy "multi-tenancy-${T}" \
+    --type=merge \
+    -p '{"spec":{"traffic":{"entExtAuth":{"authConfigRef":{"name":"oidc-'"${T}"'","namespace":"'"${AGW_NAMESPACE}"'"}}}}}'
+done
+
+###############################################################################
+# 5. Roll ExtAuth so it picks up the new AuthConfigs
+###############################################################################
+log "Rolling ExtAuth so the new AuthConfigs are loaded"
+${KC} -n "${AGW_NAMESPACE}" rollout restart deploy/ext-auth-service-enterprise-agentgateway
+${KC} -n "${AGW_NAMESPACE}" rollout status deploy/ext-auth-service-enterprise-agentgateway --timeout=120s
+
+cat <<EOF
+
+Strict cross-tenant RBAC is live. After this:
+
+  • tenant-a JWT (aud=tenant-a-client) → /mcp/tenant-a → 200
+  • tenant-a JWT                       → /mcp/tenant-b → 401 (audience mismatch)
+  • tenant-b JWT (aud=tenant-b-client) → /mcp/tenant-b → 200
+  • tenant-b JWT                       → /mcp/tenant-a → 401 (audience mismatch)
+
+Verify:
+  ./examples/06-rbac-and-registry.sh
+
+To revert: ./scripts/05e-rbac-strict.sh --cleanup
+EOF

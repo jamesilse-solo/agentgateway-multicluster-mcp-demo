@@ -52,10 +52,18 @@ note "AGW Hub: http://${AGW_LB}"
 banner "Step 1 — Acquire one JWT per tenant"
 
 get_token() {
+  # After 05e-rbac-strict applies, each tenant route requires JWT
+  # aud=<tenant>-client. Pick the right Keycloak client per username.
+  local user="$1" pass="$2"
+  local client_id="agw-client" client_secret="agw-client-secret"
+  case "${user}" in
+    tenant-a-agent) client_id=tenant-a-client; client_secret=tenant-a-client-secret ;;
+    tenant-b-agent) client_id=tenant-b-client; client_secret=tenant-b-client-secret ;;
+  esac
   curl -s -X POST "http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token" \
     -d 'grant_type=password' \
-    -d "username=$1" -d "password=$2" \
-    -d 'client_id=agw-client' -d 'client_secret=agw-client-secret' \
+    -d "username=${user}" -d "password=${pass}" \
+    -d "client_id=${client_id}" -d "client_secret=${client_secret}" \
     -d 'scope=openid email profile' \
     | jq -r '.id_token'
 }

@@ -77,7 +77,7 @@ Says "when someone calls `/mcp/tenant-a` on the gateway, send the request to ten
 ### 4. A traffic policy (`EnterpriseAgentgatewayPolicy`)
 Says "for this URL, require a valid OIDC login token AND apply a per-minute rate limit." This is the same policy shape used by the existing demo, just declared once per tenant so each gets its own rate limit.
 
-### 5. An identity in Dex (`staticPasswords` entry)
+### 5. An identity in Keycloak (`staticPasswords` entry)
 The OIDC provider needs to recognise each tenant's username and password. These are added once when the install runs.
 
 That is the whole pattern. Adding a third tenant is a copy-paste of the same five things with `tenant-c` substituted.
