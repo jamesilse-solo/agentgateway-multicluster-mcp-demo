@@ -68,7 +68,7 @@ The **`response_flags`** token (here `UAEX`) is the key. Decode using this table
 
 | Flag | Means | Likely cause | Next step |
 |------|-------|--------------|-----------|
-| `UAEX` | ExtAuth (external authorization) failed | Auth pod crashed, Redis unreachable, or Dex unreachable | **Go to Step 2** |
+| `UAEX` | ExtAuth (external authorization) failed | Auth pod crashed, Redis unreachable, or Keycloak unreachable | **Go to Step 2** |
 | `UF` | Upstream connection failure | The MCP backend pod is down or networking is broken | **Go to Step 4** |
 | `UH` | No healthy upstream | All backend pods are failing readiness | **Go to Step 4** |
 | `UT` | Upstream request timeout | The MCP backend is too slow or hung | **Go to Step 4** |
@@ -124,18 +124,18 @@ kubectl --context=<CTX> -n agentgateway-system \
 
 If you see `dial tcp ... :6379` errors, that's confirming Step 2a — ExtAuth can't reach Redis.
 
-If you see `JWKS fetch failed` or anything mentioning `dex.dex.svc.cluster.local`, that's Step 2c.
+If you see `JWKS fetch failed` or anything mentioning `keycloak.keycloak.svc.cluster.local`, that's Step 2c.
 
-### 2c — Dex itself is unreachable from ExtAuth
+### 2c — Keycloak itself is unreachable from ExtAuth
 
 ```bash
-kubectl --context=<CTX> -n dex get pod
+kubectl --context=<CTX> -n keycloak get pod
 ```
 
 - **Expected**: one pod, `STATUS=Running`. If it's missing or crashing, ExtAuth can't fetch JWKS to verify tokens.
 - Restart it if needed:
   ```bash
-  kubectl --context=<CTX> -n dex rollout restart deployment/dex
+  kubectl --context=<CTX> -n keycloak rollout restart deployment/keycloak
   ```
 
 ---
@@ -228,8 +228,8 @@ If Step 0's `curl` returned a clean 200 but MCP Inspector still fails, the gatew
 | Inspector behaviour | Fix |
 |---|---|
 | `Unexpected content type: text/html; charset=utf-8` | URL field is missing `/mcp`. Set it to `http://<agw-lb>/mcp`, not `http://<agw-lb>`. |
-| `Unregistered redirect_uri ('http://<agw-lb>/callback')` on the OAuth tab | Dex's `staticClients` redirectURIs list doesn't include the current LB hostname. Re-run `scripts/05-extauth.sh` (it patches the Keycloak realm with whatever LB is live) or manually edit `configmap/dex-config` and `kubectl rollout restart deployment/dex -n dex`. |
-| Bearer token expired between login and click | Re-acquire the token in the same shell that's running `npx @modelcontextprotocol/inspector`; Dex tokens default to short lifetimes. |
+| `Unregistered redirect_uri ('http://<agw-lb>/callback')` on the OAuth tab | the Keycloak `agw-client` redirect URI list doesn't include the current LB hostname. Re-run `scripts/03b-keycloak.sh` (the realm import includes the current LB) or edit the Keycloak realm and `kubectl rollout restart deployment/keycloak -n keycloak`. |
+| Bearer token expired between login and click | Re-acquire the token in the same shell that's running `npx @modelcontextprotocol/inspector`; Keycloak tokens default to short lifetimes. |
 | Browser cached an old auth state (esp. after switching tabs between OAuth ↔ Custom Headers) | Click "Disconnect" in the Inspector UI, refresh the browser tab, paste the token again (or restart the OAuth flow), reconnect. |
 | Either Inspector tab works in `curl` but Inspector still errors out | Make sure you're picking **Connection Type: via proxy** in Inspector — direct-connect mode has stricter content-type handling. |
 

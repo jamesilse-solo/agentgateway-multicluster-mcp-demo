@@ -33,7 +33,7 @@ set -euo pipefail
 #   - Istio ambient multicluster peering established (scripts/02-configure.sh
 #     on both clusters)
 #   - AgentGateway running on both clusters
-#   - Dex + ExtAuth running on cluster1 (scripts/05-extauth.sh)
+#   - Keycloak + ExtAuth running on cluster1 (scripts/05-extauth.sh)
 #
 # Run this script from a host that has kubectl access to both clusters.
 #
@@ -196,7 +196,7 @@ ok "HTTPRoute '${PEER_PATH}' wired to the peer-AGW backend"
 #
 # The POC protects MCP routes with an OIDC policy that targets
 # specific HTTPRoutes by name. We add 'mcp-peer-agw-route' to that list so
-# unauthenticated calls to /mcp/peer get the same 302-to-Dex treatment
+# unauthenticated calls to /mcp/peer get the same 302-to-Keycloak treatment
 # as /mcp.
 ###############################################################################
 banner "Step 4 — Add /mcp/peer to the OIDC ExtAuth policy"
@@ -218,7 +218,7 @@ fi
 ###############################################################################
 # Step 5 — Acquire a JWT and call the federated path
 #
-# Dex (the demo OIDC provider) is reachable through the AGW hub LB at
+# Keycloak (the demo OIDC provider) is reachable through the AGW hub LB at
 # /realms/solo-demo/protocol/openid-connect/token. We do the standard OAuth "password grant" to get a Bearer
 # token, then POST an MCP 'initialize' to /mcp/peer. The response is
 # served by Cluster 2's AGW — but it arrives on Cluster 1's LB just like
@@ -230,7 +230,7 @@ AGW_LB=$(${KC1} -n "${AGW_NAMESPACE}" get gateway agentgateway-hub \
   -o jsonpath='{.status.addresses[0].value}')
 note "AGW Hub LB: ${AGW_LB}"
 
-note "Acquiring a JWT from Dex (via the AGW LB, no port-forward needed)..."
+note "Acquiring a JWT from Keycloak (via the AGW LB, no port-forward needed)..."
 TOKEN=$(curl -s -X POST "http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token" \
   -d 'grant_type=password' \
   -d 'username=demo' \
@@ -241,7 +241,7 @@ TOKEN=$(curl -s -X POST "http://${AGW_LB}/realms/solo-demo/protocol/openid-conne
   | jq -r '.id_token')
 
 if [[ -z "${TOKEN}" || "${TOKEN}" == "null" ]]; then
-  echo -e "  ${Y}!! Could not acquire a token. Is Dex / ExtAuth running?${N}"
+  echo -e "  ${Y}!! Could not acquire a token. Is Keycloak / ExtAuth running?${N}"
   exit 1
 fi
 ok "Token acquired (length ${#TOKEN})"

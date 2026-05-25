@@ -15,7 +15,7 @@ set -euo pipefail
 C1="${CLUSTER1_CONTEXT:-cluster1}"
 C2="${CLUSTER2_CONTEXT:-cluster2}"
 AGW_NS="${AGW_NAMESPACE:-agentgateway-system}"
-DEX_NS="${DEX_NS:-dex}"
+KEYCLOAK_NS="${KEYCLOAK_NS:-keycloak}"
 AREG_NS="agentregistry"
 AREG_SVC="agentregistry-agentregistry-enterprise"
 
@@ -84,7 +84,7 @@ check_pod() {
 check_pod "${C1}" "${AGW_NS}" "app.kubernetes.io/name=enterprise-agentgateway"  "AGW controller (cluster1)"
 check_pod "${C1}" "${AGW_NS}" "app=ext-auth-service"                              "ExtAuth service (cluster1)"
 check_pod "${C1}" "${AGW_NS}" "app=mcp-server-everything"                         "mcp-server-everything (cluster1)"
-check_pod "${C1}" "${DEX_NS}" "app=dex"                                           "Dex OIDC provider (cluster1)"
+check_pod "${C1}" "${KEYCLOAK_NS}" "app=keycloak"                                 "Keycloak OIDC provider (cluster1)"
 
 # AgentRegistry (optional)
 AREG_RUNNING=$(${KC1} get pods -n "${AREG_NS}" -l "app.kubernetes.io/name=agentregistry-enterprise" \
@@ -144,7 +144,7 @@ else
 fi
 
 # AgentgatewayBackends
-check_resource "${C1}" "${AGW_NS}" "agentgatewaybackend" "dex-backend"
+check_resource "${C1}" "${AGW_NS}" "agentgatewaybackend" "keycloak-backend"
 for be in mcp-backends mcp-backends-remote agent-registry-backend; do
   if ${KC1} get agentgatewaybackend "${be}" -n "${AGW_NS}" &>/dev/null; then
     pass "AgentgatewayBackend/${be} exists"
@@ -198,26 +198,26 @@ fi
 ###############################################################################
 # HTTP SMOKE TESTS
 ###############################################################################
-section "HTTP Smoke Tests — Flow 1 (ExtAuth / Dex OIDC)"
+section "HTTP Smoke Tests — Flow 1 (ExtAuth / Keycloak OIDC)"
 
 # Unauthenticated → 302
 UNAUTH_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
   "http://${AGW_LB}/mcp" 2>/dev/null || echo "000")
 if [[ "${UNAUTH_CODE}" == "302" ]]; then
-  pass "GET /mcp (no auth) → HTTP 302 (redirect to Dex)"
+  pass "GET /mcp (no auth) → HTTP 302 (redirect to Keycloak)"
 elif [[ "${UNAUTH_CODE}" == "401" ]]; then
   pass "GET /mcp (no auth) → HTTP 401 (ExtAuth active)"
 else
   fail "GET /mcp (no auth) → HTTP ${UNAUTH_CODE} (expected 302 or 401)"
 fi
 
-# Location header points to Dex
+# Location header points to Keycloak
 LOCATION=$(curl -sI --max-time 10 "http://${AGW_LB}/mcp" 2>/dev/null \
   | grep -i '^location:' | tr -d '\r' || echo "")
-if echo "${LOCATION}" | grep -qi "dex"; then
-  pass "Location header contains 'dex': ${LOCATION}"
+if echo "${LOCATION}" | grep -qi "realms/solo-demo"; then
+  pass "Location header points at Keycloak realm: ${LOCATION}"
 elif [[ -n "${LOCATION}" ]]; then
-  warn "Location header present but doesn't mention dex: ${LOCATION}"
+  warn "Location header present but does not reference the Keycloak realm: ${LOCATION}"
 else
   warn "No Location header returned (may be 401 not 302)"
 fi
@@ -225,35 +225,29 @@ fi
 ###############################################################################
 # TOKEN ACQUISITION
 ###############################################################################
-section "Token Acquisition — Dex ROPC"
+section "Token Acquisition — Keycloak password grant"
 
-# Port-forward Dex
-pkill -f "port-forward.*dex.*5556" 2>/dev/null || true
-sleep 1
-${KC1} -n "${DEX_NS}" port-forward svc/dex 5556:5556 &>/dev/null &
-PF_DEX_PID=$!
-
-# Wait for Dex to be ready (up to 15s)
-DEX_READY=false
+# Keycloak realm endpoints are exposed via the AGW LB; no port-forward needed
+KC_READY=false
 for i in $(seq 1 15); do
-  if curl -s --max-time 2 http://localhost:5556/dex/healthz 2>/dev/null | grep -q "Health"; then
-    DEX_READY=true
+  if curl -s --max-time 2 "http://${AGW_LB}/realms/solo-demo/.well-known/openid-configuration" 2>/dev/null | grep -q '"issuer"'; then
+    KC_READY=true
     break
   fi
   sleep 1
 done
 
-if [[ "${DEX_READY}" == "true" ]]; then
-  pass "Dex port-forward ready (localhost:5556)"
+if [[ "${KC_READY}" == "true" ]]; then
+  pass "Keycloak realm reachable via AGW LB"
 else
-  fail "Dex port-forward not responding after 15s — check 'kubectl -n dex get pods'"
+  warn "Keycloak realm not reachable via AGW LB — check the keycloak deployment"
 fi
 
 TOKEN=""
-if [[ "${DEX_READY}" == "true" ]]; then
-  TOKEN_RESP=$(curl -s --max-time 10 -X POST http://localhost:5556/dex/token \
+if [[ "${KC_READY}" == "true" ]]; then
+  TOKEN_RESP=$(curl -s --max-time 10 -X POST http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token \
     -H 'Content-Type: application/x-www-form-urlencoded' \
-    -d 'grant_type=password&username=demo@example.com&password=demo-pass' \
+    -d 'grant_type=password&username=demo&password=demo-pass' \
     -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
     2>/dev/null || echo '{}')
 
@@ -261,7 +255,7 @@ if [[ "${DEX_READY}" == "true" ]]; then
     "import sys,json; t=json.load(sys.stdin); print(t.get('access_token',''))" 2>/dev/null || echo "")
 
   if [[ -n "${TOKEN}" ]]; then
-    pass "JWT acquired from Dex (demo@example.com)"
+    pass "JWT acquired from Keycloak (demo)"
     # Decode payload (base64url)
     PAYLOAD=$(echo "${TOKEN}" | cut -d. -f2 | tr '_-' '/+' | \
       python3 -c "import sys,base64,json; d=sys.stdin.read().strip(); d+='='*(-len(d)%4); print(json.dumps(json.loads(base64.b64decode(d)),indent=2))" 2>/dev/null || echo "")
@@ -274,7 +268,7 @@ if [[ "${DEX_READY}" == "true" ]]; then
       "import sys,json; d=json.load(sys.stdin); print(d.get('error_description', d.get('error','unknown')))" 2>/dev/null || echo "${TOKEN_RESP}")
     fail "Token acquisition failed: ${ERROR_DESC}"
     if echo "${TOKEN_RESP}" | grep -q "invalid_grant\|invalidPassword\|user"; then
-      echo "     Hint: check demo user email/password in Dex ConfigMap"
+      echo "     Hint: check demo user credentials in the Keycloak realm"
     fi
   fi
 fi
@@ -378,8 +372,8 @@ if [[ "${AREG_RUNNING}" -ge 1 ]]; then
   sleep 3
 
   AREG_TOKEN="${TOKEN:-}"
-  if [[ -z "${AREG_TOKEN}" && "${DEX_READY}" == "true" ]]; then
-    AREG_TOKEN=$(curl -s --max-time 10 -X POST http://localhost:5556/dex/token \
+  if [[ -z "${AREG_TOKEN}" && "${KC_READY}" == "true" ]]; then
+    AREG_TOKEN=$(curl -s --max-time 10 -X POST http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token \
       -H 'Content-Type: application/x-www-form-urlencoded' \
       -d 'grant_type=password&username=demo@example.com&password=demo-pass' \
       -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
@@ -419,7 +413,7 @@ if [[ "${AREG_RUNNING}" -ge 1 ]]; then
   else
     fail "AgentRegistry MCP initialize → HTTP ${AREG_HTTP} (no session ID)"
     echo "     Raw (first 300): $(echo "${AREG_INIT}" | head -c 300)"
-    echo "     Hint: check roleMapper CEL expression and Dex token claims"
+    echo "     Hint: check roleMapper CEL expression and Keycloak token claims"
   fi
 
   kill "${PF_AREG_PID}" 2>/dev/null || true

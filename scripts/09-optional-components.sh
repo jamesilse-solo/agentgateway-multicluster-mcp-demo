@@ -21,7 +21,7 @@ set -euo pipefail
 #   7 — Keycloak + Dynamic Client Registration  [OPTIONAL, HEAVY]  (SEC-05)
 #
 # Prerequisites:
-#   - 01-install.sh, 02-configure.sh, 03-dex.sh, 05-extauth.sh complete
+#   - 01-install.sh, 02-configure.sh, 03b-keycloak.sh, 05-extauth.sh complete
 #   - agentgateway-hub Gateway exists in agentgateway-system
 #   - AuthConfig oidc-dex exists (created by 05-extauth.sh)
 #   - helm, kubectl, istioctl available on PATH
@@ -327,7 +327,7 @@ spec:
         clientSecretRef:
           name: oauth-dex
           namespace: ${AGW_NS}
-        issuerUrl: "http://dex.dex.svc.cluster.local:5556/dex/"
+        issuerUrl: "http://${AGW_LB}/realms/solo-demo"
         scopes:
         - openid
         - email
@@ -335,7 +335,7 @@ spec:
         session:
           failOnFetchFailure: true
           redis:
-            cookieName: dex-session
+            cookieName: oidc-session
             options:
               host: ext-cache-enterprise-agentgateway:6379
         headers:
@@ -726,7 +726,7 @@ fi
 
 ###############################################################################
 # SECTION 7 — Keycloak + Dynamic Client Registration  [OPTIONAL / HEAVY]
-# Proves: SEC-05 (RFC 7591 DCR — Dex does not support this protocol)
+# Proves: SEC-05 (RFC 7591 DCR — the simple realm import is not DCR-enabled)
 #
 # This section is intentionally excluded from the default SECTIONS list.
 # Run explicitly with: SECTIONS=7 ./09-optional-components.sh
@@ -769,7 +769,7 @@ if run_section 7; then
   echo "  6. The response contains a new client_id + client_secret (RFC 7591 compliant)"
   echo ""
 
-  # 7c — AuthConfig for Keycloak OIDC (alongside the existing Dex AuthConfig)
+  # 7c — AuthConfig for Keycloak OIDC (alongside the existing OIDC AuthConfig)
   log "7c: Creating AuthConfig for Keycloak OIDC (for DCR flow)"
   KEYCLOAK_SVC_IP=$(${KC} -n "${KEYCLOAK_NAMESPACE}" get svc "${KC_SVC}" \
     -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "keycloak.${KEYCLOAK_NAMESPACE}.svc.cluster.local")

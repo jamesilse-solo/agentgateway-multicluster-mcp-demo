@@ -16,7 +16,7 @@ set -euo pipefail
 #   - EnterpriseAgentgatewayPolicy   →  per-route ExtAuth + LOCAL token-bucket
 #                                      rate limit (premium vs. free tier)
 #
-# Two suggested Dex users (added by 03-dex.sh in this PR):
+# Two tenant Keycloak users (defined in scripts/03b-keycloak.sh realm import):
 #   - tenant-a-agent / tenant-a-pass  (premium tier)
 #   - tenant-b-agent / tenant-b-pass  (free tier)
 #

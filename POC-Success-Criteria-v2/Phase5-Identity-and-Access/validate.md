@@ -16,8 +16,8 @@ The customer's audience cares about three things in this phase:
 | AUTH-02 | Tool-Level RBAC (OPA) | OPA Rego policy parses the JSON-RPC tool name + JWT claims. `delete_database` is blocked for `role: agent`, allowed for `role: admin`. | OPA ConfigMap + AuthConfig referenced (left in place; demo state) |
 | AUTH-03 | Two-Level Tool Filtering | Filtering at server-level (which servers an agent can see) AND tool-level (which tools within a server). `tools/list` and `tools/call` reflect both layers. | Optional policy resources (ranged within the test) |
 | AUTH-04 | Token Exchange / On-Behalf-Of | Gateway exchanges the agent's identity token for a downstream token (RFC 8693) bound to the upstream SaaS. Upstream sees a user-derived token, not a static credential. | None (test is read-only against an existing exchange config) |
-| AUTH-05 | **OAuth 2.1 hardening** | PKCE on auth-code flow is accepted by Dex (`code_challenge_method=S256`); client-credentials grant via a dedicated `mcp-service` Dex client returns a JWT that the gateway accepts on `/mcp`; RFC 9728 protected-resource-metadata is fetchable at `/.well-known/oauth-protected-resource`. | Applies `scripts/05d-oauth21.sh`; `--cleanup` reverts |
-| AUTH-06 | **Identity-bound path scoping** | Per-tenant Dex clients issue audience-distinct JWTs; cross-tenant calls (a `tenant-a` JWT hitting `/mcp/tenant-b`) return HTTP 401 at the gateway. | Applies `scripts/05e-rbac-strict.sh`; `--cleanup` reverts |
+| AUTH-05 | **OAuth 2.1 hardening** | PKCE on auth-code flow is accepted by Keycloak (`code_challenge_method=S256`); client-credentials grant via a dedicated `mcp-service` Keycloak client returns a JWT that the gateway accepts on `/mcp`; RFC 9728 protected-resource-metadata is fetchable at `/.well-known/oauth-protected-resource`. | Applies `scripts/05d-oauth21.sh`; `--cleanup` reverts |
+| AUTH-06 | **Identity-bound path scoping** | Per-tenant Keycloak clients issue audience-distinct JWTs; cross-tenant calls (a `tenant-a` JWT hitting `/mcp/tenant-b`) return HTTP 401 at the gateway. | Applies `scripts/05e-rbac-strict.sh`; `--cleanup` reverts |
 
 ## Run
 
@@ -31,12 +31,12 @@ The script is interactive. AUTH-04 may print a "manual / read-only" note if toke
 
 | Component | Namespace | Why |
 |-----------|-----------|-----|
-| OIDC IdP (Dex for the demo cluster; production environments typically use Keycloak with Entra brokering or equivalent) | `dex` (demo) | issues JWTs |
+| OIDC IdP (Keycloak for the demo cluster; production environments typically use Keycloak with Entra brokering or equivalent) | `keycloak` (demo) | issues JWTs |
 | `ext-auth-service` pod | `agentgateway-system` | validates JWTs at the gateway |
 | OPA policy ConfigMap | `agentgateway-system` | for AUTH-02 / AUTH-03 |
 | `agentgateway-hub` external LB | — | endpoint under test |
 | `netshoot` debug pod | `debug` | request originator (not strictly required if running curl locally with tokens) |
-| Demo creds | — | `demo@example.com` / `demo-pass` / `agw-client` / `agw-client-secret` (Dex demo grant) |
+| Demo creds | — | `demo` / `demo-pass` / `agw-client` / `agw-client-secret` (Keycloak demo grant) |
 
 ## AUTH-01 — OAuth 2.0 / OIDC at the Gateway
 
@@ -54,14 +54,14 @@ ExtAuth at the gateway is the single point where every JWT is validated — sign
 
 ### What success looks like
 
-- No-token: 401 — **or 302 redirect** if the gateway's ExtAuth is configured for browser/redirect flow (Dex/Entra OIDC providers commonly redirect unauthenticated requests to a login page rather than returning 401 directly). Both outcomes confirm "the request was rejected at the gateway" and are equivalent for this test.
+- No-token: 401 — **or 302 redirect** if the gateway's ExtAuth is configured for browser/redirect flow (Keycloak/Entra OIDC providers commonly redirect unauthenticated requests to a login page rather than returning 401 directly). Both outcomes confirm "the request was rejected at the gateway" and are equivalent for this test.
 - Valid token: passes through, MCP server returns a real response (HTTP 200/204).
 - Tampered token: 401 or 302 (same as no-token — rejection at the gateway).
 - ExtAuth pod log shows the validation outcome for each request.
 
 ### Caveat — 302 vs 401 in the demo cluster
 
-The demo cluster's `oidc-dex` AuthConfig is set up for browser-style OIDC flow, so unauthenticated calls receive a 302 redirect to the Dex login page rather than a flat 401. Customers expecting machine-to-machine API behaviour will typically configure ExtAuth for `client-credentials` flow with direct 401 responses; the security guarantee (request rejected before reaching the MCP server) is identical either way.
+The demo cluster's `oidc-dex` AuthConfig (resource name kept for backward-compat; backed by Keycloak) is set up for browser-style OIDC flow, so unauthenticated calls receive a 302 redirect to the Keycloak login page rather than a flat 401. Customers expecting machine-to-machine API behaviour will typically configure ExtAuth for `client-credentials` flow with direct 401 responses; the security guarantee (request rejected before reaching the MCP server) is identical either way.
 
 ## AUTH-02 — Tool-Level RBAC (OPA)
 
@@ -131,7 +131,7 @@ The mechanism is **OAuth 2.0 Token Exchange (RFC 8693)**. The agent presents its
 
 ### What the script does
 
-1. Confirm the IdP supports RFC 8693 (Keycloak ✓, Auth0 ✓, Entra ✓; Dex ✗ — see caveats).
+1. Confirm the IdP supports RFC 8693 (Keycloak ✓, Auth0 ✓, Entra ✓).
 2. Confirm the gateway's token-exchange `AuthConfig` is in place pointing at the IdP's exchange endpoint.
 3. Acquire a baseline JWT for the agent (its own identity).
 4. Make a tools/call to a SaaS-backed MCP server through the gateway.
@@ -145,12 +145,12 @@ The mechanism is **OAuth 2.0 Token Exchange (RFC 8693)**. The agent presents its
 
 ### Caveats
 
-- Dex (used in the demo cluster's EKS environment) does **not** support token exchange. For this test, the EKS demo cluster will print a `note` and skip; running against the OCP cluster (Keycloak) gives a real result.
+
 - Production environments using Keycloak (with Entra brokering or otherwise) or Auth0 support token exchange and pass this test.
 - This test does NOT validate the SaaS server's behaviour with the exchanged token; that's an integration concern with the specific SaaS provider.
 
 ## What this phase deliberately does NOT cover
 
 - **mTLS-only auth.** The gateway can also validate mTLS client certificates instead of JWTs; that's a different demo path, less relevant for AI agent flows where JWT is dominant.
-- **DCR (Dynamic Client Registration).** Removed from the v2 list — Dex doesn't support it and most enterprise IdPs (Keycloak / Auth0 / Entra) cover the same need through admin-issued client credentials.
+- **DCR (Dynamic Client Registration).** Most enterprise IdPs (Keycloak / Auth0 / Entra) cover the equivalent need through admin-issued client credentials.
 - **Per-tool rate limiting tied to identity.** Phase 6 covers global rate limiting; per-identity per-tool rate limits are an advanced extension not in this POC.

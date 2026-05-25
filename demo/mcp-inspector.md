@@ -10,9 +10,9 @@ This walks through pointing the [Model Context Protocol Inspector](https://githu
 Two scenarios are covered:
 
 - **Scenario A — Jumphost** (sections 1–4): a managed jumphost with `kubectl` + AWS auth, where `./demo/portforward.sh` is already running.
-- **Scenario B — Laptop hitting the AGW public IP directly** (section 5): the customer's laptop running Inspector locally and connecting straight to the gateway's external LoadBalancer. Both **Custom Headers Bearer** and Inspector's **OAuth tab** work from a laptop because `/dex/*` is exposed through the AGW LB (see section 6).
+- **Scenario B — Laptop hitting the AGW public IP directly** (section 5): the customer's laptop running Inspector locally and connecting straight to the gateway's external LoadBalancer. Both **Custom Headers Bearer** and Inspector's **OAuth tab** work from a laptop because `/realms/*` and `/resources/*` is exposed through the AGW LB (see section 6).
 
-> **Common assumption**: the AGW Hub `/mcp` endpoint is a public cloud `LoadBalancer` and does **not** need port-forwarding. Dex (`/dex/*`) is also exposed through the same LB, so token acquisition from a laptop no longer requires a port-forward. `./demo/portforward.sh` is still useful for the jumphost workflow and for the supporting UIs (AGW UI on 4000, Registry on 8080, Gloo Mesh UI on 8090).
+> **Common assumption**: the AGW Hub `/mcp` endpoint is a public cloud `LoadBalancer` and does **not** need port-forwarding. Keycloak (`/realms/*` and `/resources/*`) is also exposed through the same LB, so token acquisition from a laptop no longer requires a port-forward. `./demo/portforward.sh` is still useful for the jumphost workflow and for the supporting UIs (AGW UI on 4000, Registry on 8080, Gloo Mesh UI on 8090).
 
 ---
 
@@ -21,7 +21,7 @@ Two scenarios are covered:
 | Tool | Why |
 |------|-----|
 | Node.js ≥ 18 + `npx` | MCP Inspector ships as an npm package; `npx` invokes it without a global install |
-| `kubectl` (already configured for `cluster1`) | port-forward Dex on 5556 (handled by `portforward.sh`) |
+| `kubectl` (already configured for `cluster1`) | the realm endpoints reachable through the AGW LB (handled by `portforward.sh`) |
 | `curl`, `jq` | Acquire and decode the Bearer JWT |
 | The AGW Hub LB hostname | Printed by `portforward.sh` under the **AgentGateway MCP Endpoints** section |
 
@@ -54,14 +54,14 @@ All four paths require a valid `Authorization: Bearer <JWT>` header.
 
 ---
 
-## 2. Acquire a JWT from Dex
+## 2. Acquire a JWT from Keycloak
 
-`portforward.sh` is already forwarding Dex on `localhost:5556`. Use the demo password grant:
+Keycloak realm endpoints are reachable through the AGW LB. Use the demo password grant:
 
 ```bash
-export TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
+export TOKEN=$(curl -s -X POST http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token \
   -d 'grant_type=password' \
-  -d 'username=demo@example.com' \
+  -d 'username=demo' \
   -d 'password=demo-pass' \
   -d 'client_id=agw-client' \
   -d 'client_secret=agw-client-secret' \
@@ -72,7 +72,7 @@ export TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
 echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq .
 ```
 
-Tokens expire (default ~24h for Dex). Re-run this block if the inspector starts returning 302 or 401.
+Tokens expire (default ~5 min for Keycloak access_token; ~30 min for id_token). Re-run this block if the inspector starts returning 302 or 401.
 
 ---
 
@@ -196,18 +196,18 @@ This is for the case where a customer (or you) runs MCP Inspector **directly on 
 Two paths both work from a laptop:
 
 - **Custom Headers Bearer** (sections 5.2–5.4) — fast, always reliable, doesn't depend on Inspector's OAuth implementation.
-- **Inspector's OAuth tab** — also works because `/dex/*` is exposed through the AGW LB (see section 6). The token, login redirect, and callback all resolve from the laptop with no port-forward or VPN.
+- **Inspector's OAuth tab** — also works because `/realms/*` and `/resources/*` is exposed through the AGW LB (see section 6). The token, login redirect, and callback all resolve from the laptop with no port-forward or VPN.
 
 ### 5.1 Pre-reqs on the laptop
 
 - Node ≥ 18 (`node --version`) — required by `npx @modelcontextprotocol/inspector`.
-- Network egress to the AGW LB hostname on port 80 (corporate proxies / split-tunnel VPNs can block this — `curl -I http://<agw-lb>/dex/.well-known/openid-configuration` is the quickest pre-flight).
+- Network egress to the AGW LB hostname on port 80 (corporate proxies / split-tunnel VPNs can block this — `curl -I http://<agw-lb>/realms/solo-demo/.well-known/openid-configuration` is the quickest pre-flight).
 
 `kubectl` access is **not required** for Inspector itself — the laptop talks to the gateway over HTTP only.
 
 ### 5.2 Acquire a JWT on the laptop
 
-Hit the Dex `/token` endpoint **directly through the AGW LB** — no port-forward needed:
+Hit the Keycloak `/token` endpoint **directly through the AGW LB** — no port-forward needed:
 
 ```bash
 export AGW_LB=$(kubectl --context=cluster1 -n agentgateway-system \
@@ -215,9 +215,9 @@ export AGW_LB=$(kubectl --context=cluster1 -n agentgateway-system \
   -o jsonpath='{.status.addresses[0].value}')
 # Or, if you don't have kubectl access, ask the cluster admin for the LB hostname.
 
-export TOKEN=$(curl -s -X POST "http://${AGW_LB}/dex/token" \
+export TOKEN=$(curl -s -X POST "http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token" \
   -d 'grant_type=password' \
-  -d 'username=demo@example.com' \
+  -d 'username=demo' \
   -d 'password=demo-pass' \
   -d 'client_id=agw-client' \
   -d 'client_secret=agw-client-secret' \
@@ -229,7 +229,7 @@ export TOKEN=$(curl -s -X POST "http://${AGW_LB}/dex/token" \
 python3 -c "import sys,base64,json; s='$TOKEN'.split('.')[1]; s+='='*(-len(s)%4); d=json.loads(base64.urlsafe_b64decode(s)); print('exp',d['exp'],'iss',d['iss'],'aud',d['aud'])"
 ```
 
-The `iss` claim will be `http://<agw-lb>/dex` — the same URL the laptop can reach. That's what makes the OAuth tab work too.
+The `iss` claim will be `http://<agw-lb>/realms/solo-demo` — the same URL the laptop can reach. That's what makes the OAuth tab work too.
 
 ### 5.3 Resolve the AGW Hub LB
 
@@ -259,40 +259,35 @@ In the connection panel:
 
 Click **Connect**, then **List Tools**.
 
-> Inspector's **"OAuth" tab also works** in this demo because `/dex/*` is routed through the AGW LB and the JWT issuer matches that public URL. If you'd rather Inspector handle the full OAuth round-trip (browser-based login, callback, token exchange), select **OAuth** instead of Custom Headers and click Connect — you'll be redirected to the Dex login page, sign in as `demo@example.com / demo-pass`, and Inspector will complete the rest. See section 6 for the architecture that makes this work.
+> Inspector's **"OAuth" tab also works** in this demo because `/realms/*` and `/resources/*` is routed through the AGW LB and the JWT issuer matches that public URL. If you'd rather Inspector handle the full OAuth round-trip (browser-based login, callback, token exchange), select **OAuth** instead of Custom Headers and click Connect — you'll be redirected to the Keycloak login page, sign in as `demo@example.com / demo-pass`, and Inspector will complete the rest. See section 6 for the architecture that makes this work.
 
 ---
 
-## 6. How Dex is reachable from outside the cluster
+## 6. How Keycloak is reachable from outside the cluster
 
 Q: *"What changed so the OAuth flow works from a laptop?"*
 
 The demo's `05-extauth.sh` script puts three pieces in place:
 
-1. **`dex-route` HTTPRoute** — exposes `/dex/*` on the AGW Hub LoadBalancer, backed by the in-cluster Dex Service via `dex-backend`. Path is left unauthenticated (the ExtAuth policy is scoped to specific MCP/UI routes, not the whole Gateway), otherwise the login redirect would itself need a valid session.
-2. **Dex `issuer` patched** to `http://<agw-lb>/dex` — every JWT Dex issues now has an `iss` claim that's resolvable from any external client.
-3. **ExtAuth `AuthConfig.issuerUrl`** matches Dex's `issuer` — JWKS fetches happen inside the cluster (so cluster-internal DNS still works for that), but the validation comparison against the token's `iss` claim succeeds because both sides use the public URL.
+1. **`keycloak-route` + `keycloak-resources-route` HTTPRoutes** — expose `/realms/*` and `/resources/*` on the AGW Hub LoadBalancer, backed by the in-cluster `keycloak` Service via `keycloak-backend`. Paths left unauthenticated (the ExtAuth policy is scoped to specific MCP/UI routes, not the whole Gateway), otherwise the login redirect would itself need a valid session.
+2. **Keycloak realm `issuer` (set automatically by realm import)** matches the AGW LB URL — every JWT Keycloak issues has an `iss` claim that's resolvable from any external client.
+3. **ExtAuth `AuthConfig.issuerUrl`** matches Keycloak's realm issuer — JWKS fetches happen via the realm's `/protocol/openid-connect/certs` endpoint (reachable through the AGW LB), and the validation comparison against the token's `iss` claim succeeds.
 
-Consequences:
-
-- **Custom Headers Bearer** (sections 4 and 5.4): unchanged — still the simplest path.
-- **OAuth tab in Inspector**: works because Inspector's automatic discovery (`/.well-known/openid-configuration`), the user-agent login redirect (`/dex/auth/...`), and the token exchange (`/dex/token`) are all reachable through the LB.
-- **`resourceMetadata` / RFC 9728 protected-resource discovery**: still not configured. MCP clients that strictly enforce RFC 9728 won't find an `oauth-protected-resource` document on `/mcp` — but Inspector's OAuth tab falls back to the `WWW-Authenticate` challenge model and works fine.
-
+---
 ---
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| `HTTP 302 Found` redirect to `/dex/auth` | Missing or expired Bearer token | Re-run section 2 (or 5.2) to refresh `$TOKEN` |
+| `HTTP 302 Found` redirect to `/realms/solo-demo/protocol/openid-connect/auth` | Missing or expired Bearer token | Re-run section 2 (or 5.2) to refresh `$TOKEN` |
 | `HTTP 401 Unauthorized` | Token tampered or wrong audience | Decode the token and check `aud`/`iss` match the gateway's `AuthConfig`; re-acquire |
 | `HTTP 404 Not Found` | Wrong path; the route doesn't exist on the gateway | `kubectl --context cluster1 -n agentgateway-system get httproute` to list registered paths |
 | Inspector hangs at "Connecting…" | Network egress is blocked, OR the AGW LB isn't reachable on port 80 | `curl -v http://${AGW_LB}/mcp` — should return at least an HTTP response. If not, check security groups / corporate proxy |
 | `tools/list` returns fewer tools than the upstream MCP server | Working as designed — `AgentgatewayPolicy.mcp.authorization` is filtering. See `demo/adding-mcp-servers.md` for the policy mechanism |
-| `connection refused` to `localhost:5556` | `portforward.sh` not running or Dex port-forward died (only relevant for the jumphost scenario; laptops no longer need to port-forward Dex — section 5.2 uses the LB directly) | Start a new terminal: `./demo/portforward.sh` |
-| Inspector connects but immediately shows `Unexpected content type: text/html; charset=utf-8` | The URL field is missing `/mcp` — Inspector hit the gateway root, which returned an HTML 404 / Dex login page | Set URL to `http://<agw-lb>/mcp` (with the path), not `http://<agw-lb>` |
-| Inspector's "OAuth" tab fails with `Unregistered redirect_uri` | The current AGW LB hostname isn't in Dex's `staticClients[*].redirectURIs` (happens after a fresh LB provisioning when `AGW_LB` wasn't set at `03-dex.sh` time) | Re-run `05-extauth.sh` — it patches the Dex configmap with the current LB. Or manually update the configmap and `rollout restart deployment/dex -n dex` |
+| `connection refused` to `localhost:5556` | `portforward.sh` not running or the realm port-forward died (only relevant for the jumphost scenario; laptops no longer need any port-forward — section 5.2 uses the LB directly) | Start a new terminal: `./demo/portforward.sh` |
+| Inspector connects but immediately shows `Unexpected content type: text/html; charset=utf-8` | The URL field is missing `/mcp` — Inspector hit the gateway root, which returned an HTML 404 / Keycloak login page | Set URL to `http://<agw-lb>/mcp` (with the path), not `http://<agw-lb>` |
+| Inspector's "OAuth" tab fails with `Unregistered redirect_uri` | The current AGW LB hostname isn't in the Keycloak `agw-client` redirect URI list (happens after a fresh LB provisioning) | Edit the Keycloak realm via kcadm.sh and roll the deployment |
 | Inspector shows `500 Internal Server Error` while trying to connect | Almost never AgentGateway itself — it returns 302 (no auth) or 404 (no matching route), not 500. The 500 is usually Inspector's local **proxy server** (port 6277) failing to follow a redirect, OR a downstream MCP server crashing on a malformed payload. | (1) Confirm the 5xx isn't AGW: `curl -i http://${AGW_LB}/mcp -H "Authorization: Bearer ${TOKEN}"` — should be 200/204/202. (2) If clean, check Inspector's proxy log in the terminal where you ran `npx`. (3) See [`troubleshooting-agw.md`](troubleshooting-agw.md) for the response-flags-based AGW 5xx walkthrough |
 | JWT works in `curl` but Inspector returns `auth failed` | The `Bearer ` prefix was double-prepended (Inspector has both a "Bearer Token" field that prepends, and a Custom Headers field where you'd add it manually — using both gives `Bearer Bearer eyJ...`) | Use **one** of the two: either the Bearer Token field with just the raw token, or Custom Headers with the full `Bearer eyJ...` string |
 | JWT works from jumphost, fails from laptop with the **same** token | Token pasted with extra whitespace, or quietly expired between hops | Re-acquire on the laptop in the same shell you'll run Inspector from; verify with `python3 -c "import sys,base64,json; s='$TOKEN'.split('.')[1]; s+='='*(-len(s)%4); print(json.loads(base64.urlsafe_b64decode(s))['exp'])"` |
@@ -301,7 +296,7 @@ Consequences:
 
 ## Related docs
 
-- [`demo/portforward.sh`](portforward.sh) — sets up the local port-forwards (Dex on 5556, AGW UI on 4000, Registry on 8080, Gloo Mesh UI on 8090)
+- [`demo/portforward.sh`](portforward.sh) — sets up the local port-forwards (Keycloak admin on 8081, AGW UI on 4000, Registry on 8080, Gloo Mesh UI on 8090)
 - [`demo/send-traffic.sh`](send-traffic.sh) — what Inspector does, in shell form: token acquisition + initialize + tools/list + tools/call
 - [`demo/adding-mcp-servers.md`](adding-mcp-servers.md) — how the routes you're inspecting were configured; explains AgentgatewayBackend + HTTPRoute + AgentgatewayPolicy
 - [`POC-Success-Criteria-v2/Phase5-Identity-and-Access/`](../POC-Success-Criteria-v2/Phase5-Identity-and-Access/) — AUTH-01 / AUTH-03 validation tests cover the same flow programmatically

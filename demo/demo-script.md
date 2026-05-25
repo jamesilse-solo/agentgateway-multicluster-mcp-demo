@@ -14,7 +14,7 @@ Run these before the call starts. Everything should be green before screen-share
 ```bash
 # 1. Start all port-forwards (leave this running in a dedicated terminal)
 KUBE_CONTEXT=cluster1 ./demo/portforward.sh
-# → All five sections should show ✓ (AgentRegistry / AGW UI / Gloo Mesh / Dex / MCP LBs)
+# → All five sections should show ✓ (AgentRegistry / AGW UI / Gloo Mesh / Keycloak / MCP LBs)
 
 # 2. Verify AgentRegistry UI loads and shows 3 servers
 open http://localhost:8080
@@ -117,7 +117,7 @@ curl -s -X POST http://localhost:8080/v0/servers \
 
 > "Before we run traffic, let me show you the security model. Two flows."
 
-> "On the left: agent authentication. The agent acquires a JWT from the OIDC provider — in this case Dex, in production this is your enterprise IdP. That JWT is presented as a Bearer token on every MCP request. ExtAuth at the gateway validates the signature, expiry, and issuer on every call — not just session initialization. An expired or tampered token gets a 401 before it ever reaches a tool server."
+> "On the left: agent authentication. The agent acquires a JWT from the OIDC provider — in this case Keycloak, in production this is your enterprise IdP. That JWT is presented as a Bearer token on every MCP request. ExtAuth at the gateway validates the signature, expiry, and issuer on every call — not just session initialization. An expired or tampered token gets a 401 before it ever reaches a tool server."
 
 > "On the right: the MCP session flow. Initialize gives you a session ID. tools/list and tools/call both carry the session ID and the Bearer token. The gateway enforces auth at every step. The MCP server has zero auth logic — all of it is at the gateway."
 
@@ -127,7 +127,7 @@ curl -s -X POST http://localhost:8080/v0/servers \
 KUBE_CONTEXT=cluster1 ./demo/send-traffic.sh
 ```
 
-> "Step 1: JWT from Dex. In production this is a service account credential or OAuth client credentials flow."
+> "Step 1: JWT from Keycloak. In production this is a service account credential or OAuth client credentials flow."
 
 > "Step 2: MCP session init. Bearer token on the POST. ExtAuth validates. We get back a session ID."
 
@@ -244,7 +244,7 @@ kubectl --context cluster1 -n agentgateway-system get httproute search-solo-io-r
 
 # Hit the external MCP server through AGW with the demo JWT
 AGW_LB=$(kubectl --context cluster1 -n agentgateway-system get gateway agentgateway-hub -o jsonpath='{.status.addresses[0].value}')
-TOKEN=$(... acquire from Dex ...)
+TOKEN=$(... acquire from Keycloak ...)
 curl -s -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
@@ -354,8 +354,8 @@ kubectl --context cluster1 -n gloo-mesh port-forward svc/gloo-mesh-ui 8090:8090
 
 **send-traffic.sh fails at JWT step:**
 ```bash
-kubectl --context cluster1 -n dex get pods
-kubectl --context cluster1 -n dex get cm dex-config -o yaml | grep -A5 agw-client
+kubectl --context cluster1 -n keycloak get pods
+kubectl --context cluster1 -n keycloak exec deploy/keycloak -- /opt/keycloak/bin/kcadm.sh get clients -r solo-demo -q clientId=agw-client
 ```
 
 **Cluster2 → Cluster1 reverse route not working:**

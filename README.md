@@ -401,11 +401,10 @@ curl -si "http://${AGW_LB}/mcp" \
 | gloo-platform | `helm repo add gloo-platform https://storage.googleapis.com/gloo-platform/helm-charts` |
 | chart name | `gloo-platform/gloo-platform --version 2.12.3` |
 
-### Dex OIDC Provider (Phase 3)
+### Keycloak OIDC Provider (Phase 3b)
 
-| Image | Full Path |
-|-------|-----------|
-| dex | `ghcr.io/dexidp/dex:v2.42.0` |
+Deployed by `scripts/03b-keycloak.sh`. See the script header for the realm, clients, and users it creates.
+
 
 ### Bookinfo Images
 
@@ -768,67 +767,31 @@ export GATEWAY_ROLE=spoke
 
 ---
 
-## Phase 3: Dex OIDC Provider (`scripts/03-dex.sh`)
+## Phase 3b: Keycloak OIDC Provider (`scripts/03b-keycloak.sh`)
 
-Deploys [Dex](https://dexidp.io/) v2.42.0 on cluster1 as a lightweight OIDC provider using plain Kubernetes manifests (no Helm). Dex acts as the identity provider for both Flow 1 (user auth via ExtAuth) and Bearer token validation. Run after Phase 2, before Phase 5.
-
-> **Flow 2 (MCP Auth with dynamic discovery)**: If you need MCP clients such as Claude Code or MCP Inspector to auto-discover and self-register with the IdP (the full MCP OAuth flow), replace Dex with Keycloak or Auth0. See the [Authentication section](#authentication-with-agentgateway--keycloak) at the top of this document. Dex does not implement dynamic client registration as required by the MCP OAuth spec.
-
-### Parameters
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `KUBE_CONTEXT` | No | `cluster1` | kubectl context |
-| `DEX_NAMESPACE` | No | `dex` | Namespace to deploy Dex into |
-| `DEX_CLIENT_ID` | No | `agw-client` | OIDC client ID used by AgentGateway |
-| `DEX_CLIENT_SECRET` | No | `agw-client-secret` | OIDC client secret — **change for real use** |
-| `DEX_USER_EMAIL` | No | `demo@example.com` | Demo user email |
-| `DEX_USER_PASSWORD` | No | `demo-pass` | Demo user password — **change for real use** |
-| `DEX_USER_NAME` | No | `demo-user` | Demo user display name |
-| `AGW_LB` | No | — | AgentGateway LB address (added to Dex redirect URIs) |
-
-### Example
-
-```bash
-export KUBE_CONTEXT=cluster1
-
-./scripts/03-dex.sh
-```
+Deploys Keycloak 26 with a realm import — agw-client, mcp-service, tenant-a-client, tenant-b-client + demo / tenant-a-agent / tenant-b-agent users. Exposes `/realms/*` and `/resources/*` through the AGW LB. Replaces the prior Dex installation.
 
 ### What it creates
 
-- `dex` namespace (enrolled in ambient mesh)
-- `dex-config` ConfigMap — Dex config with static OIDC clients and a hashed demo user password
-- `dex` Deployment running `ghcr.io/dexidp/dex:v2.42.0`
-- `dex` ClusterIP Service on port 5556
+- `keycloak` namespace (enrolled in ambient mesh)
+- `keycloak-realm` ConfigMap with the `solo-demo` realm import JSON
+- `keycloak` Deployment running Keycloak 26 in `start-dev --import-realm` mode
+- `keycloak` ClusterIP Service on port 8080
+- `keycloak-backend` AgentgatewayBackend (cluster1)
+- `keycloak-route` HTTPRoute exposing `/realms/*` through the AGW LB
+- `keycloak-resources-route` HTTPRoute exposing `/resources/*`
 
 ### Access
 
+The realm OIDC endpoints are reachable through the AGW LB at `http://<agw-lb>/realms/solo-demo/`. The admin console is port-forwarded by `./demo/portforward.sh` to `http://localhost:8081` (admin / admin).
+
 ```bash
-# Port-forward Dex locally (for token acquisition in demo/testing)
-kubectl --context cluster1 -n dex port-forward svc/dex 5556:5556
-
-# Verify OIDC discovery endpoint
-curl http://localhost:5556/dex/.well-known/openid-configuration | jq .issuer
-# Expected: "http://dex.dex.svc.cluster.local:5556/dex"
-
-# Acquire a JWT (password grant — for MCP client / service-to-service use)
-TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  -d 'grant_type=password&username=demo@example.com&password=demo-pass' \
-  -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
-  | jq -r '.access_token')
+# Acquire a JWT (password grant)
+TOKEN=$(curl -s -X POST http://<agw-lb>/realms/solo-demo/protocol/openid-connect/token \
+  -d "grant_type=password&username=demo&password=demo-pass" \
+  -d "client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile" \
+  | jq -r ".id_token")
 ```
-
-### Dex internal URL (for AgentGateway)
-
-```
-http://dex.dex.svc.cluster.local:5556/dex
-```
-
-OIDC discovery: `http://dex.dex.svc.cluster.local:5556/dex/.well-known/openid-configuration`
-
----
 
 ## Phase 4: Enterprise AgentRegistry (`scripts/04-areg-enterprise.sh`)
 
@@ -843,8 +806,8 @@ Upgrades the community AgentRegistry (0.2.1) to **AgentRegistry Enterprise v0.0.
 | `AREG_HELM_REPO` | No | `oci://us-docker.pkg.dev/agentregistry/enterprise/helm/agentregistry-enterprise` | OCI chart path |
 | `AREG_VERSION` | No | `0.0.13` | Chart version (no `v` prefix) |
 | `AREG_JWT_KEY` | No | _(random)_ | JWT signing key — set to a stable value to avoid session invalidation on re-runs |
-| `DEX_CLIENT_ID` | No | `agw-client` | Dex OIDC client ID used by AgentRegistry |
-| `DEX_CLIENT_SECRET` | No | `agw-client-secret` | Dex OIDC client secret |
+| `OIDC_CLIENT_ID` | No | `agw-client` | Keycloak OIDC client ID used by AgentRegistry |
+| `OIDC_CLIENT_SECRET` | No | `agw-client-secret` | Keycloak OIDC client secret |
 
 ### Example
 
@@ -940,13 +903,13 @@ kubectl --context cluster1 get gatewayclass enterprise-agentgateway -o jsonpath=
 
 ## Phase 5: Authentication (`scripts/05-extauth.sh`)
 
-Configures **Flow 1 (User Auth)** on the AgentGateway Hub: the ExtAuth sidecar + Redis validate Dex OIDC sessions. Unauthenticated browser requests receive a 302 redirect to the Dex login page; authenticated requests (Bearer token or session cookie) pass through to the MCP backend.
+Configures **Flow 1 (User Auth)** on the AgentGateway Hub: the ExtAuth sidecar + Redis validate Keycloak OIDC sessions. Unauthenticated browser requests receive a 302 redirect to the Keycloak login page; authenticated requests (Bearer token or session cookie) pass through to the MCP backend.
 
-> **Flow 2 (MCP Auth)**: See the [Authentication section](#authentication-with-agentgateway--keycloak) at the top of this document. Full MCP OAuth dynamic discovery (for Claude Code, VS Code, MCP Inspector) requires replacing Dex with Keycloak or Auth0 and using `AgentgatewayPolicy` with `jwtAuthentication` + `mcp` extension.
+> **Flow 2 (MCP Auth)**: See the [Authentication section](#authentication-with-agentgateway--keycloak) at the top of this document. Full MCP OAuth dynamic discovery (for Claude Code, VS Code, MCP Inspector) uses Keycloak (the demo IdP) and using `AgentgatewayPolicy` with `jwtAuthentication` + `mcp` extension.
 
 ### Prerequisites
 
-- Phase 3 (`03-dex.sh`) must be complete — Dex must be running
+- Phase 3b (`03b-keycloak.sh`) must be complete — Keycloak must be running
 - `AGENTGATEWAY_LICENSE_KEY` must be set
 
 ### Parameters
@@ -955,10 +918,6 @@ Configures **Flow 1 (User Auth)** on the AgentGateway Hub: the ExtAuth sidecar +
 |----------|----------|---------|-------------|
 | `AGENTGATEWAY_LICENSE_KEY` | **Yes** | — | AGW Enterprise license key |
 | `KUBE_CONTEXT` | No | `cluster1` | kubectl context |
-| `DEX_NAMESPACE` | No | `dex` | Namespace where Dex is running |
-| `DEX_CLIENT_ID` | No | `agw-client` | Dex OIDC client ID (must match Phase 3) |
-| `DEX_CLIENT_SECRET` | No | `agw-client-secret` | Dex client secret (must match Phase 3) |
-| `AGW_VERSION` | No | `v2.3.0-rc.3` | AgentGateway Enterprise version |
 
 ### Example
 
@@ -972,7 +931,7 @@ export AGENTGATEWAY_LICENSE_KEY=<key>
 ### What it creates
 
 - `oauth-dex` Secret — Dex client secret
-- `dex-backend` AgentgatewayBackend — static route to Dex service
+- `keycloak-backend` AgentgatewayBackend — static route to Keycloak service
 - `oidc-dex` AuthConfig — OIDC authorization code flow via Dex
 - `oidc-extauth` EnterpriseAgentgatewayPolicy — attaches ExtAuth to `agentgateway-hub` Gateway
 
@@ -982,15 +941,14 @@ export AGENTGATEWAY_LICENSE_KEY=<key>
 # Port-forward hub gateway
 kubectl --context cluster1 -n agentgateway-system port-forward svc/agentgateway-hub 8080:80 &
 
-# Port-forward Dex (for token acquisition)
-kubectl --context cluster1 -n dex port-forward svc/dex 5556:5556 &
+# Keycloak realm endpoints are exposed through the AGW LB — no port-forward needed
 
-# Flow 1 — Unauthenticated browser request → 302 redirect to Dex login page
+# Flow 1 — Unauthenticated browser request → 302 redirect to Keycloak login page
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/mcp
 # Expected: 302
 
-# MCP client — acquire JWT from Dex (password grant)
-TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
+# MCP client — acquire JWT from Keycloak (password grant)
+TOKEN=$(curl -s -X POST http://<agw-lb>/realms/solo-demo/protocol/openid-connect/token \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   -d 'grant_type=password&username=demo@example.com&password=demo-pass' \
   -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
@@ -1065,7 +1023,7 @@ kubectl --context cluster1 -n agentgateway-system scale deploy mcp-server-everyt
 
 ```
 MCP Client
-  → AgentGateway Hub (cluster1)   ← Dex OIDC auth enforced here (Flow 1)
+  → AgentGateway Hub (cluster1)   ← Keycloak OIDC auth enforced here (Flow 1)
     → ztunnel (cluster1)           ← HBONE mTLS tunnel (SPIFFE identity)
       → East-West Gateway (cluster1)
         → East-West Gateway (cluster2)
@@ -1088,8 +1046,8 @@ Registers three MCP servers into the AgentRegistry Enterprise catalog so they ap
 | `KUBE_CONTEXT` | No | `cluster1` | Hub cluster kubectl context |
 | `AGW_NAMESPACE` | No | `agentgateway-system` | AGW namespace |
 | `AREG_NAMESPACE` | No | `agentregistry` | AgentRegistry namespace |
-| `DEX_USER` | No | `demo@example.com` | Dex user for token acquisition |
-| `DEX_PASS` | No | `demo-pass` | Dex user password |
+| `OIDC_USER` | No | `demo` | Keycloak user for token acquisition |
+| `OIDC_PASS` | No | `demo-pass` | Keycloak user password |
 
 ### Example
 
@@ -1097,7 +1055,7 @@ Registers three MCP servers into the AgentRegistry Enterprise catalog so they ap
 ./scripts/07-register-mcp-servers.sh
 ```
 
-The script port-forwards both AgentRegistry (`:8080`) and Dex (`:5556`), acquires a Bearer token, and registers the servers via `POST /v0/servers`. It stays running and prints the UI URL when done — press `Ctrl-C` to stop.
+The script port-forwards AgentRegistry (`:8080`), acquires a Bearer token, and registers the servers via `POST /v0/servers`. It stays running and prints the UI URL when done — press `Ctrl-C` to stop.
 
 ### Servers registered
 
@@ -1124,7 +1082,7 @@ If you need to re-register a server manually (e.g. after the LB address changes)
 
 ```bash
 # Get a token first
-TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
+TOKEN=$(curl -s -X POST http://<agw-lb>/realms/solo-demo/protocol/openid-connect/token \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   -d 'grant_type=password&username=demo@example.com&password=demo-pass' \
   -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
@@ -1180,30 +1138,8 @@ curl -s -H "Authorization: Bearer ${TOKEN}" \
 
 ### UI access
 
-The AREG UI uses OIDC (Dex) for login. The browser gets redirected to the internal cluster hostname `dex.dex.svc.cluster.local:5556`, so you need:
+The AREG UI uses OIDC for login. With Keycloak as the IdP, the AGW LB serves the realm endpoints directly — no `/etc/hosts` workaround needed.
 
-1. A `/etc/hosts` entry so the browser resolves `dex.dex.svc.cluster.local` to localhost
-2. Port-forwards for both AREG (`:8080`) and Dex (`:5556`)
-3. Dex configured with `allowedOrigins: ["http://localhost:8080"]` so CORS is permitted for the PKCE token exchange (included in `03-dex.sh`)
-
-```bash
-# 1. Add /etc/hosts entry (one-time, needs sudo)
-sudo sh -c 'echo "127.0.0.1 dex.dex.svc.cluster.local" >> /etc/hosts'
-
-# 2. Port-forward AgentRegistry UI and Dex
-kubectl --context cluster1 -n agentregistry \
-  port-forward svc/agentregistry-agentregistry-enterprise 8080:8080 &
-kubectl --context cluster1 -n dex \
-  port-forward svc/dex 5556:5556 &
-
-# 3. Open http://localhost:8080 — log in with demo@example.com / demo-pass
-```
-
-> The `07-register-mcp-servers.sh` script handles all of this automatically including the `/etc/hosts` entry (prompts for sudo).
-
-Navigate to **Servers** — you will see both `com.amazonaws/*` servers (in-cluster) and `io.solo/search-solo-io` (public) alongside the 363 seeded community entries.
-
----
 
 ## Phase 8: Gloo Mesh Enterprise (`scripts/08-gloo-mesh-enterprise.sh`)
 
@@ -1299,8 +1235,8 @@ kubectl --context cluster1 -n agentgateway-system port-forward svc/agentgateway-
 # Terminal 2: AgentRegistry UI
 kubectl --context cluster1 -n agentregistry port-forward svc/agentregistry-agentregistry-enterprise 8080:8080
 
-# Terminal 3: Dex (for token acquisition)
-kubectl --context cluster1 -n dex port-forward svc/dex 5556:5556
+# Terminal 3: token acquisition (Keycloak realm via AGW LB)
+# (no port-forward needed — Keycloak realm endpoints are exposed via AGW LB)
 ```
 
 **Step 1 — Show AgentRegistry catalog**
@@ -1311,15 +1247,15 @@ kubectl --context cluster1 -n dex port-forward svc/dex 5556:5556
 **Step 2 — Flow 1: User auth enforcement (browser redirect)**
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/mcp
-# Expected: 302 → Dex login page
+# Expected: 302 → Keycloak login page
 ```
-- Open `http://localhost:8080/mcp` in a browser — shows Dex login page
+- Open `http://<agw-lb>/mcp` in a browser — shows Keycloak login page
 - Explain: every MCP call requires identity, enforced at the gateway with ExtAuth
 
 **Step 3 — Flow 2: MCP client auth (Bearer token)**
 ```bash
-# Acquire JWT from Dex
-TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
+# Acquire JWT from Keycloak
+TOKEN=$(curl -s -X POST http://<agw-lb>/realms/solo-demo/protocol/openid-connect/token \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   -d 'grant_type=password&username=demo@example.com&password=demo-pass' \
   -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
@@ -1344,7 +1280,7 @@ curl -s -X POST http://localhost:8080/mcp \
   | grep -o '"name":"[^"]*"'
 ```
 - Explain: AI agents and SDKs use JWT Bearer tokens — no browser required
-- Note: for full MCP OAuth dynamic discovery (Claude Code, MCP Inspector auto-registering) replace Dex with Keycloak — see the [Authentication section](#authentication-with-agentgateway--keycloak)
+- Note: MCP OAuth dynamic discovery (Claude Code, MCP Inspector auto-registering) — see the [Authentication section](#authentication-with-agentgateway--keycloak)
 
 **Step 4 — Cross-cluster MCP (the differentiator)**
 ```bash
@@ -1781,7 +1717,7 @@ kubectl --context cluster1 get httproute -n agentgateway-system
 kubectl --context cluster1 get agentgatewaybackend -n agentgateway-system
 
 # Test cross-cluster route (should return 200 or 400 for a bare GET — MCP requires POST)
-TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
+TOKEN=$(curl -s -X POST http://<agw-lb>/realms/solo-demo/protocol/openid-connect/token \
   -d 'grant_type=password&username=demo@example.com&password=demo-pass' \
   -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
   | jq -r '.access_token')

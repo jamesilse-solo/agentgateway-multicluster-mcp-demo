@@ -7,8 +7,7 @@ set -euo pipefail
 KC_CTX="${KUBE_CONTEXT:-cluster1}"
 KC="kubectl --context ${KC_CTX}"
 AGW_NS="${AGW_NS:-agentgateway-system}"
-DEX_NS="${DEX_NS:-dex}"
-DEMO_USER="${DEMO_USER:-demo@example.com}"
+DEMO_USER="${DEMO_USER:-demo}"
 DEMO_PASS="${DEMO_PASS:-demo-pass}"
 CLIENT_ID="${CLIENT_ID:-agw-client}"
 CLIENT_SECRET="${CLIENT_SECRET:-agw-client-secret}"
@@ -46,12 +45,10 @@ curl -s -o /dev/null -w "  HTTP %{http_code}  (no token)\n" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize"}' || true
 pause
 
-show "Acquire JWT from Dex (password grant)"
-${KC} -n "${DEX_NS}" port-forward svc/dex 5556:5556 &>/dev/null &
-DEX_PF=$!
-trap 'kill ${DEX_PF} 2>/dev/null || true' EXIT
+show "Acquire JWT from Keycloak (password grant)"
+
 sleep 3
-TOKEN=$(curl -s --max-time 5 -X POST http://localhost:5556/dex/token \
+TOKEN=$(curl -s --max-time 5 -X POST http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token \
   -d "grant_type=password" \
   -d "username=${DEMO_USER}" \
   -d "password=${DEMO_PASS}" \
@@ -61,7 +58,7 @@ TOKEN=$(curl -s --max-time 5 -X POST http://localhost:5556/dex/token \
 if [[ -n "${TOKEN}" ]]; then
   ok "Token acquired (first 40 chars): ${TOKEN:0:40}..."
 else
-  warn "Could not acquire token — check Dex port-forward / config."
+  warn "Could not acquire token — check Keycloak / ExtAuth."
 fi
 pause
 
@@ -117,7 +114,7 @@ pause
 # AUTH-04 — Token Exchange / On-Behalf-Of
 ###############################################################################
 step "AUTH-04 — Token Exchange / On-Behalf-Of (RFC 8693)"
-note "Dex (demo IdP) does not support RFC 8693 — for real validation, run this against
+note "The simple demo flow does not exercise RFC 8693 — for real validation, run this against
       a Keycloak / Auth0 / Entra-backed cluster (any IdP that implements RFC 8693)."
 echo -e "  → Demo path: print the configured token-exchange AuthConfig (if any),"
 echo -e "    show what an exchanged token's claims look like in mock mode."

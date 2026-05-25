@@ -18,8 +18,8 @@ set -euo pipefail
 #
 # WHAT YOU NEED FIRST
 # -------------------
-#   - scripts/03-dex.sh                — adds tenant-a-agent + tenant-b-agent users
-#   - scripts/05-extauth.sh            — Dex + ExtAuth OIDC wired up
+#   - scripts/03b-keycloak.sh                — defines tenant-a-agent + tenant-b-agent users in the realm
+#   - scripts/05-extauth.sh            — Keycloak + ExtAuth OIDC wired up
 #   - scripts/05b-multi-tenancy.sh     — creates the per-tenant routes/policies
 #
 # Usage:
@@ -136,7 +136,7 @@ ${KC} -n "${AGW_NAMESPACE}" get agentgatewaypolicy mcp-backends-tenant-b-policy 
 ###############################################################################
 banner "What just happened"
 cat <<EOF
-  1. Two agent identities authenticated against the SAME Dex provider
+  1. Two agent identities authenticated against the SAME Keycloak provider
      using their unique credentials.
   2. They called the SAME AgentGateway LB but on different URL paths
      (/mcp/tenant-a vs /mcp/tenant-b). One LB, one gateway, two tenancies.

@@ -1,25 +1,26 @@
-# Example 3 — MCP guardrails (what works today)
+# Example 3 — MCP guardrails (what's live today)
 
-This example is for someone who is **not** a Kubernetes engineer. It walks through what content guardrails exist for MCP traffic in Solo CRD v2.3.3, and is explicit about what is *not* yet supported.
+This example is for someone who is **not** a Kubernetes engineer. It walks through what content guardrails exist for MCP traffic in Solo CRD v2.3.3 and what each layer catches.
 
-To run it: `./scripts/05c-guardrails.sh` then `./examples/03-guardrails.sh`.
+To run it: `./scripts/05c-guardrails.sh` and `./scripts/09b-extproc-guardrails.sh`, then `./examples/03-guardrails.sh` (tool-name policy) and `./examples/08-extproc-guardrails.sh` (body-content scanner).
 
 ---
 
 ## The honest picture
 
-When this example was first scoped, the plan was to demonstrate native PII-regex filtering on MCP bodies (SSN, credit card, phone number) using AgentGateway's built-in pattern catalogue. After validating against the live cluster, the reality turned out to be more nuanced:
+The POC has **two complementary guardrail layers** wired up:
 
-| Capability | AgentGateway OSS schema | Solo CRD v2.3.3 | Demo |
-|---|---|---|---|
-| Built-in PII regex on AI/LLM body content | ✅ `mcp.guard.regex.builtin` | ✅ `backend.ai.promptGuard.regex.builtins` | not in this POC (no AI backend deployed) |
-| Built-in PII regex on **MCP** body content | ✅ in OSS config | ❌ field exists under `backend.ai`, only fires on AI backends | not possible today |
-| Tool-name allow/deny via CEL | ✅ | ✅ `backend.mcp.authorization.matchExpressions` with `mcp.tool.name` | **what this example shows** |
-| CEL match on `mcp.tool.arguments` | partial | only post-request, not for authorization decisions | not possible today |
-| External webhook (ExtProc) on MCP traffic | ✅ | ✅ via `GatewayExtension` | placeholder in `scripts/09-optional-components.sh` |
-| Bedrock / Azure / OpenAI / Google content backends | ✅ | ✅ for `backend.ai` only | future package |
+| Capability | Solo CRD v2.3.3 | This POC |
+|---|---|---|
+| Tool-name allow/deny via CEL | ✅ `backend.mcp.authorization.matchExpressions` with `mcp.tool.name` | ✅ live — `scripts/05c-guardrails.sh` |
+| External webhook (ExtProc) on MCP request bodies | ✅ via `traffic.extProc.backendRef` on an EnterpriseAgentgatewayPolicy | ✅ live — `scripts/09b-extproc-guardrails.sh` (Python ExtProc) |
+| JSON-RPC envelope + tool-argument schema validation | via ExtProc | ✅ — hardcoded `TOOL_SCHEMAS` dict per tool, rejects extra/missing/mistyped args |
+| Built-in PII regex on AI/LLM body content | ✅ `backend.ai.promptGuard.regex.builtins` | not in this POC (no AI backend deployed) |
+| Built-in PII regex on **MCP** body content | ❌ field exists under `backend.ai`, only fires on AI backends | covered via ExtProc instead |
+| CEL match on `mcp.tool.arguments` at request time | only post-request, not for authorization decisions | covered via ExtProc instead |
+| Bedrock / Azure / OpenAI / Google content backends | ✅ for `backend.ai` only | future package |
 
-The verdict: **for MCP traffic in v2.3.3, the gateway gives you tool-name authorization at request time. For body-content filtering, you go through ExtProc (Solo's webhook hook) or wait for the AI-backend guardrails to be extended to MCP backends in a future release.**
+The verdict: **tool-name authorization handles known-bad tool calls at the AGW native layer; everything that needs to look inside the request body — PII, prompt injection, schema enforcement — runs through the ExtProc service wired to the `oidc-extauth` policy.** Both layers fire before the upstream MCP server is touched.
 
 ---
 
@@ -87,14 +88,46 @@ Not available at request time: `mcp.tool.arguments` (only available post-request
 
 ---
 
-## What you'd do for body-content filtering today
+## Body-content filtering — what the ExtProc layer adds
 
-Two paths, both already scaffolded in the POC repo:
+`scripts/09b-extproc-guardrails.sh` deploys a Python ExtProc (`envoy_data_plane==2.0.0b9` with `betterproto2`) wired to the `oidc-extauth` `EnterpriseAgentgatewayPolicy` via `traffic.extProc.backendRef`. It runs on every MCP request body bound for any route that policy covers (`/mcp`, `/mcp/tenant-*`, `/mcp/peer`, etc.), and inspects them before the upstream MCP server is touched.
 
-| Path | Where | Notes |
-|---|---|---|
-| **ExtProc webhook** | `scripts/09-optional-components.sh` section 5 deploys a placeholder Python passthrough ExtProc. Wire a real PII scanner (regex, F5 Calypso, custom model) into the `GatewayExtension` and `AgentgatewayPolicy` already created there | Universal — runs on every MCP body. Highest flexibility, requires running a service |
-| **Bedrock / Azure / OpenAI / Model Armor** | These backends are configurable on `backend.ai.promptGuard` today. To use them on MCP traffic, you'd need either (a) a Solo CRD update extending promptGuard to MCP backends, or (b) a thin AI-backend wrapper that proxies MCP through an AI route | Managed vendor PII / content-safety. Less code, requires vendor accounts |
+What it catches today (each rejection returns JSON-RPC `-32602` with a descriptive message):
+
+| Pattern | Rule |
+|---|---|
+| Social Security Number | `\b\d{3}-\d{2}-\d{4}\b` |
+| Credit card | `\b\d{4}[- ]\d{4}[- ]\d{4}[- ]\d{4}\b` (tight enough to avoid `2024-11-05` MCP protocolVersion false-positives) |
+| Prompt injection | `(?i)ignore (all )?previous instructions`, `<\|im_start\|>` |
+| Exfiltration markers | `(?i)exfiltrate|exfil-?data` |
+| Tool-argument schema | `tools/call` params validated against a per-tool `TOOL_SCHEMAS` dict; extra/missing/mistyped fields rejected (closes Biraj's 5/18 "block when agent sends 3-4 params for a 2-param tool" ask) |
+
+```mermaid
+flowchart LR
+    A["AI Agent"]
+    AGW["AgentGateway"]
+    EP["ExtProc<br/>(Python, gRPC)"]
+    Tool["MCP Tool Server"]
+
+    A -- "tools/call (clean)" --> AGW
+    AGW -. "request_body" .-> EP
+    EP -. "allow" .-> AGW
+    AGW --> Tool
+    Tool --> AGW --> A
+
+    A -- "tools/call (SSN / injection / bad schema)" --> AGW
+    AGW -. "request_body" .-> EP
+    EP -. "block + JSON-RPC -32602" .-> AGW
+    AGW -- "error" --> A
+
+    style AGW fill:#8023C3,stroke:#fff,color:#fff
+    style EP fill:#20B7F3,stroke:#fff,color:#fff
+    style Tool fill:#1FEEB3,stroke:#fff,color:#000
+```
+
+Run `./examples/08-extproc-guardrails.sh` for six live test cases (1 clean + 5 blocked).
+
+For managed vendor PII / content-safety (Bedrock / Azure / OpenAI / Model Armor) you'd still need either (a) a Solo CRD update extending `backend.ai.promptGuard` to MCP backends, or (b) an AI-backend wrapper that proxies MCP through an AI route — both are future-package work.
 
 ---
 
@@ -102,11 +135,11 @@ Two paths, both already scaffolded in the POC repo:
 
 | Capability | Status |
 |---|---|
-| Tool-name allow/deny via CEL | ✅ — live |
-| Built-in PII regex on MCP bodies | ❌ — not in Solo CRD v2.3.3 for MCP backends. Available for `backend.ai` (AI/LLM) backends |
-| Tool-arguments inspection at request time | ❌ — CEL exposes `mcp.tool.arguments` only post-request |
-| JSON-RPC envelope schema enforcement (drop malformed bodies) | ❌ — upstream MCP servers return the standard `-32600` |
-| Vendor content backends on MCP traffic (Bedrock / Azure / etc.) | ❌ — wired for AI backends only in v2.3.3 |
+| Tool-name allow/deny via CEL | ✅ — live (this example) |
+| ExtProc body-content scanning (PII / injection / exfil / schema) | ✅ — live (`scripts/09b-extproc-guardrails.sh` + `examples/08-extproc-guardrails.sh`) |
+| Built-in PII regex on **AI/LLM** bodies via `backend.ai.promptGuard` | ❌ — no AI backend deployed in this POC |
+| Vendor content backends on MCP traffic (Bedrock / Azure / etc.) | ❌ — `promptGuard` is wired for AI backends only in v2.3.3 |
+| Response-body scanning (server → agent) | ❌ — current ExtProc inspects request bodies only; response scanning is a future enhancement |
 
 ---
 
@@ -114,6 +147,11 @@ Two paths, both already scaffolded in the POC repo:
 
 ```
 ./scripts/05c-guardrails.sh        # Apply the tool-name Deny policy
-./examples/03-guardrails.sh        # Run the three test calls
+./examples/03-guardrails.sh        # Run the three tool-name test calls
+
+./scripts/09b-extproc-guardrails.sh   # Deploy the body-content ExtProc
+./examples/08-extproc-guardrails.sh   # Run the six body-content test cases
+
 ./scripts/05c-guardrails.sh --cleanup
+./scripts/09b-extproc-guardrails.sh --cleanup
 ```

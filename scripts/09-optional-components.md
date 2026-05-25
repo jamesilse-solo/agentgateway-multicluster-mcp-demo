@@ -63,7 +63,7 @@ Both controls operate at the gateway with zero changes to the MCP servers themse
 
 - `ConfigMap/opa-tool-rbac` — Rego policy for role × tool matrix (SEC-02)
 - `ConfigMap/opa-tbac` — Rego policy for task × tool matrix (SEC-03)
-- `AuthConfig/oidc-with-opa` — replaces the existing Dex-only AuthConfig, chaining OIDC → OPA RBAC → OPA TBAC
+- `AuthConfig/oidc-with-opa` — replaces the existing OIDC AuthConfig, chaining OIDC → OPA RBAC → OPA TBAC
 - Patch to the `oidc-extauth` `EnterpriseAgentgatewayPolicy` to reference the new AuthConfig
 
 > **Note:** After applying, restart the ExtAuth service pod so it picks up the new ConfigMap modules:
@@ -190,7 +190,7 @@ Without traces, a slow `tools/call` is a black box. With traces:
 
 For MCP, DCR means a new AI agent can onboard to the platform in a fully automated pipeline: it POSTs a registration request to the IdP's `/clients-registrations` endpoint and receives credentials it uses to authenticate through the gateway. No manual IdP configuration step is needed.
 
-**Dex** (used for the primary OIDC flow in this POC) does not implement RFC 7591. **Keycloak** does. This section deploys Keycloak as an additional IdP specifically to demonstrate the DCR flow.
+The default Keycloak realm import in this POC has DCR disabled. This section enables DCR on the realm to demonstrate the flow.
 
 ### Why it's needed
 
@@ -218,4 +218,4 @@ In an enterprise with many agent deployments, manual IdP client registration cre
 | 4 | GR-03 | RateLimitConfig absent; Redis already running |
 | 5 | GR-01 | GatewayExtension absent; no ExtProc webhook wired |
 | 6 | CP-05 | OTEL Collector + Jaeger not deployed |
-| 7 | SEC-05 | Dex does not support RFC 7591 DCR |
+| 7 | SEC-05 | the simple Keycloak realm import is not configured for RFC 7591 DCR |
