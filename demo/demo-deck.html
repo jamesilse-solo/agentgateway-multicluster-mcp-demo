@@ -546,7 +546,7 @@
             <line x1="100" y1="32" x2="130" y2="32" stroke="#8023C3" stroke-width="1.4" marker-end="url(#a1)"/>
             <rect x="100" y="22" width="32" height="12" rx="3" fill="#151927"/>
             <text x="116" y="31" text-anchor="middle" font-family="DM Mono" font-size="6.5" fill="#9DA1BD">creds</text>
-            <!-- Arrow dex→agent (JWT) -->
+            <!-- Arrow keycloak→agent (JWT) -->
             <path d="M130,48 Q115,62 100,56" stroke="#1FEEB3" stroke-width="1.4" fill="none" marker-end="url(#a2)"/>
             <rect x="100" y="57" width="34" height="12" rx="3" fill="#151927"/>
             <text x="117" y="66" text-anchor="middle" font-family="DM Mono" font-size="6.5" fill="#1FEEB3">JWT</text>
@@ -1023,7 +1023,7 @@ spec:
             <li><strong>Per-tenant path</strong> — <code style="font-family:DM Mono,monospace;font-size:0.85em;color:#CC85FF">/mcp/tenant-a</code> for the premium tier, <code style="font-family:DM Mono,monospace;font-size:0.85em;color:#20B7F3">/mcp/tenant-b</code> for the free tier. Different paths → different policies → different behavior</li>
             <li><strong>Per-tenant tool allowlist</strong> — <code style="font-family:DM Mono,monospace;font-size:0.85em">AgentgatewayPolicy.mcp.authorization</code> with a CEL allowlist filters <code style="font-family:DM Mono,monospace;font-size:0.85em">tools/list</code> at the gateway. Tenant-a sees all 13; tenant-b sees 2</li>
             <li><strong>Per-tenant rate limit</strong> — <code style="font-family:DM Mono,monospace;font-size:0.85em">EnterpriseAgentgatewayPolicy.traffic.rateLimit</code> declares a per-route quota. Premium tier 1000/min, free tier 5/min</li>
-            <li><strong>Per-tenant identity</strong> — distinct Dex users (<code style="font-family:DM Mono,monospace;font-size:0.85em">tenant-a-agent</code>, <code style="font-family:DM Mono,monospace;font-size:0.85em">tenant-b-agent</code>); the same ExtAuth + JWT chain that already protects <code style="font-family:DM Mono,monospace;font-size:0.85em">/mcp</code> applies per-tenant too</li>
+            <li><strong>Per-tenant identity</strong> — distinct Keycloak users (<code style="font-family:DM Mono,monospace;font-size:0.85em">tenant-a-agent</code>, <code style="font-family:DM Mono,monospace;font-size:0.85em">tenant-b-agent</code>); the same ExtAuth + JWT chain that already protects <code style="font-family:DM Mono,monospace;font-size:0.85em">/mcp</code> applies per-tenant too</li>
             <li><strong>Onboarding a new tenant</strong> — one more of each of those five resources. No new infra, no new gateway</li>
           </ul>
         </div>
@@ -1089,7 +1089,7 @@ spec:
 
             <!-- Footer note -->
             <text x="14" y="262" font-family="DM Mono" font-size="6.5" fill="#5C6178">Per tenant: AgentgatewayBackend + HTTPRoute + AgentgatewayPolicy (tools)</text>
-            <text x="14" y="273" font-family="DM Mono" font-size="6.5" fill="#5C6178">                  + EnterpriseAgentgatewayPolicy (auth + rate limit) + Dex user</text>
+            <text x="14" y="273" font-family="DM Mono" font-size="6.5" fill="#5C6178">                  + EnterpriseAgentgatewayPolicy (auth + rate limit) + Keycloak user</text>
           </svg>
         </div>
       </div>
@@ -1172,7 +1172,7 @@ spec:
         <div class="two-col-left">
           <ul class="bullet-list">
             <li><strong>PKCE on auth-code</strong> — Keycloak enforces <code>code_challenge_method=S256</code> when present. Browser flows are immune to authorization-code interception</li>
-            <li><strong>Client-credentials grant — LIVE</strong> — <code>mcp-service</code> Keycloak client issues a real m2m JWT (Dex v2.42 couldn't; Keycloak does)</li>
+            <li><strong>Client-credentials grant — LIVE</strong> — <code>mcp-service</code> Keycloak client issues a real m2m JWT (Keycloak issues a real m2m token)</li>
             <li><strong>RFC 9728 metadata</strong> — field configured on the policy. AGW v2.3.3 does not yet serve <code>/.well-known/oauth-protected-resource</code> at the LB; tracking for a future release</li>
             <li><strong>Per-tenant audiences</strong> — each Keycloak client issues a JWT with its own <code>aud</code>. The gateway can pin a backend to one audience</li>
             <li><strong>Backwards-compatible</strong> — password grant still works for <code>demo/send-traffic.sh</code>; production hardening switches users to PKCE + client-creds</li>
@@ -1283,7 +1283,7 @@ spec:
             <li><strong>Audience-restricted backend</strong> — <code>AgentgatewayPolicy.backend.mcp.authentication.audiences</code> declares the allowed audience. Wrong audience → 401 at the gateway</li>
             <li><strong>Tool RBAC stays</strong> — combined with the per-path tool allowlists from slide 10, each tenant gets identity-checked AND tool-filtered</li>
             <li><strong>No OPA</strong> — pure CRD config. (OPA stays available for richer per-claim policies)</li>
-            <li><strong>Adding a tenant</strong> — one Dex client + one audience-restricted policy. Same five-resource pattern as slide 10</li>
+            <li><strong>Adding a tenant</strong> — one Keycloak client + one audience-restricted policy. Same five-resource pattern as slide 10</li>
           </ul>
         </div>
         <div class="two-col-right">
@@ -1312,7 +1312,7 @@ spec:
             <pre style="font-family:'DM Mono',monospace;font-size:0.7rem;color:#B5B8CD;line-height:1.55;margin-top:0.4rem;overflow-x:auto;">backend:
   mcp:
     authentication:
-      issuer:    "http://&lt;lb&gt;/dex"
+      issuer:    "http://&lt;lb&gt;/realms/solo-demo"
       audiences: ["tenant-a-client"]</pre>
           </div>
         </div>
@@ -1336,7 +1336,7 @@ spec:
       <div class="two-col" style="margin-top:1.25rem;grid-template-columns:1fr 1.4fr;">
         <div class="two-col-left">
           <ul class="bullet-list">
-            <li><strong>Single OIDC login</strong> — hitting <code>/console</code> without a session redirects to Dex, same as <code>/mcp</code></li>
+            <li><strong>Single OIDC login</strong> — hitting <code>/console</code> without a session redirects to the Keycloak login, same as <code>/mcp</code></li>
             <li><strong>Served by the platform</strong> — Nginx pod + AGW HTTPRoute. No external hosting, no per-laptop static file</li>
             <li><strong>Extensible</strong> — add a card by editing one HTML block in the configmap. Add a route to embed a UI inline later</li>
             <li><strong>Honest about the dependency</strong> — card links point at the existing port-forwards from <code>demo/portforward.sh</code>. Production would route each UI through the LB directly</li>

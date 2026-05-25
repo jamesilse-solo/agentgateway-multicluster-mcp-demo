@@ -134,18 +134,16 @@ step "CR-03 — Agent looks up the tool by name and calls it"
 echo -e "  → From inside netshoot: discovery → acquire JWT → MCP initialize → tools/call."
 pause
 
-# Acquire a Dex JWT (the gateway requires Bearer auth via ExtAuth)
-DEMO_USER="${DEMO_USER:-demo@example.com}"
+# Acquire a Keycloak JWT (gateway requires Bearer auth via ExtAuth)
+DEMO_USER="${DEMO_USER:-demo}"
 DEMO_PASS="${DEMO_PASS:-demo-pass}"
 CLIENT_ID="${CLIENT_ID:-agw-client}"
 CLIENT_SECRET="${CLIENT_SECRET:-agw-client-secret}"
-DEX_NS="${DEX_NS:-dex}"
 
-show "Acquire Dex JWT (the gateway's ExtAuth requires it)"
-${KC} -n "${DEX_NS}" port-forward svc/dex 5556:5556 &>/dev/null &
-DEX_PF=$!
+show "Acquire Keycloak JWT (the gateway's ExtAuth requires it)"
+
 sleep 3
-TOKEN=$(curl -s --max-time 5 -X POST http://localhost:5556/dex/token \
+TOKEN=$(curl -s --max-time 5 -X POST http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token \
   -d "grant_type=password" \
   -d "username=${DEMO_USER}" \
   -d "password=${DEMO_PASS}" \
@@ -153,9 +151,8 @@ TOKEN=$(curl -s --max-time 5 -X POST http://localhost:5556/dex/token \
   -d "client_id=${CLIENT_ID}" \
   -d "client_secret=${CLIENT_SECRET}" 2>/dev/null \
   | python3 -c 'import sys,json;print(json.load(sys.stdin).get("id_token",""))' 2>/dev/null || echo "")
-kill ${DEX_PF} 2>/dev/null || true
 [[ -n "${TOKEN}" ]] && ok "Token acquired (first 40 chars): ${TOKEN:0:40}..." \
-                   || warn "Could not acquire Dex token — CR-03 will be skipped."
+                   || warn "Could not acquire Keycloak token — CR-03 will be skipped."
 
 if [[ -z "${NETSHOOT}" || -z "${AGW_LB}" || -z "${TOKEN}" ]]; then
   warn "Cannot run CR-03: missing netshoot pod, AGW LB, or token."

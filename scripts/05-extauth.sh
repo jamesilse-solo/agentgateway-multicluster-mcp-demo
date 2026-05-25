@@ -154,7 +154,7 @@ done
 # Routes created in later scripts (06, 08, 09) attach to this policy
 # automatically once they exist.
 ###############################################################################
-log "Attaching AuthConfig to MCP/UI HTTPRoutes (dex-route excluded)"
+log "Attaching AuthConfig to MCP/UI HTTPRoutes (keycloak-route excluded)"
 ${KC} apply -n "${AGW_NAMESPACE}" -f - <<EOF
 apiVersion: enterpriseagentgateway.solo.io/v1alpha1
 kind: EnterpriseAgentgatewayPolicy

@@ -41,7 +41,7 @@ flowchart LR
 
 Two things make this more than a bookmark:
 
-1. **It is gated by the same OIDC as the rest of the platform.** Hitting `/console/` without a valid Dex login redirects to Dex's login page, just like `/mcp` does. One login, one credential surface for the operator.
+1. **It is gated by the same OIDC as the rest of the platform.** Hitting `/console/` without a valid OIDC login redirects to Keycloak's login page, just like `/mcp` does. One login, one credential surface for the operator.
 
 2. **It is served by the platform itself.** The index page lives inside the gateway's namespace, deployed by the same Helm/script flow as everything else. No external hosting, no per-laptop static file to lose track of.
 

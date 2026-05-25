@@ -5,14 +5,14 @@ set -euo pipefail
 # send-traffic.sh — Simulate an AI agent calling MCP through AgentGateway
 #
 # Demonstrates the full MCP flow:
-#   1. Acquire JWT from Dex (password grant)
+#   1. Acquire JWT from Keycloak (password grant)
 #   2. Initialize MCP session through AgentGateway
 #   3. List available tools
 #   4. Call a tool (echo)
 #
 # Flags:
 #   --remote    Route through /mcp/remote (cluster2 cross-cluster MCP server)
-#   --no-auth   Skip Dex token (anonymous / no-auth mode)
+#   --no-auth   Skip OIDC token (anonymous / no-auth mode)
 #
 # Usage:
 #   ./demo/send-traffic.sh
@@ -22,7 +22,6 @@ set -euo pipefail
 
 KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1}"
 AGW_NAMESPACE="${AGW_NAMESPACE:-agentgateway-system}"
-DEX_NAMESPACE="${DEX_NAMESPACE:-dex}"
 KC="kubectl --context ${KUBE_CONTEXT}"
 
 BOLD='\033[1m'
@@ -90,40 +89,23 @@ info "MCP path:        ${MCP_PATH}"
 echo ""
 
 ###############################################################################
-# Step 1 — Acquire JWT from Dex
+# Step 1 — Acquire JWT from Keycloak
 ###############################################################################
 TOKEN=""
 if [[ "${NO_AUTH}" == "false" ]]; then
-  step "Step 1 — Acquire JWT from Dex (password grant)"
+  step "Step 1 — Acquire JWT from Keycloak (password grant)"
 
-  # Reuse an existing Dex port-forward if one is running (e.g. from
-  # ./demo/portforward.sh). Otherwise start a temporary one for this run.
-  PF_DEX=""
-  if curl -s --max-time 2 "http://localhost:5556/realms/solo-demo/.well-known/openid-configuration" &>/dev/null; then
-    info "  Dex already reachable on :5556 — reusing existing port-forward."
-  else
-    info "  Port-forwarding Dex locally on :5556..."
-    ${KC} -n "${DEX_NAMESPACE}" port-forward svc/dex 5556:5556 &>/dev/null &
-    PF_DEX=$!
-    trap 'kill "${PF_DEX}" 2>/dev/null || true' EXIT
-    for i in $(seq 1 12); do
-      if curl -s --max-time 2 "http://localhost:5556/realms/solo-demo/.well-known/openid-configuration" &>/dev/null; then
-        break
-      fi
-      [[ ${i} -eq 12 ]] && { fail "Dex not reachable on :5556 after 12s"; exit 1; }
-      sleep 1
-    done
-  fi
-
-  cmd "POST http://localhost:5556/realms/solo-demo/protocol/openid-connect/token  grant_type=password  user=demo"
-  TOKEN=$(curl -s -X POST http://localhost:5556/realms/solo-demo/protocol/openid-connect/token \
+  # Keycloak's realm OIDC endpoints are exposed via the AGW LB at
+  # /realms/solo-demo/* — no port-forward needed for token acquisition.
+  cmd "POST http://\${AGW_LB}/realms/solo-demo/protocol/openid-connect/token"
+  TOKEN=$(curl -s -X POST "http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token" \
     -H 'Content-Type: application/x-www-form-urlencoded' \
     -d 'grant_type=password&username=demo&password=demo-pass' \
     -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
-    | python3 -c "import sys,json; t=json.load(sys.stdin); print(t.get('access_token',''))" 2>/dev/null || echo "")
+    | python3 -c "import sys,json; t=json.load(sys.stdin); print(t.get('id_token',''))" 2>/dev/null || echo "")
 
   if [[ -z "${TOKEN}" ]]; then
-    warn "Token acquisition failed — check Dex is running"
+    warn "Token acquisition failed — is Keycloak (scripts/03b-keycloak.sh) running?"
     warn "Continuing without auth token..."
   else
     ok "JWT acquired"

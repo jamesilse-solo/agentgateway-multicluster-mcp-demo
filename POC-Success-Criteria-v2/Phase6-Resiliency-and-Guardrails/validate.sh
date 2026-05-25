@@ -73,22 +73,19 @@ note "Demo step: send 15 rapid requests with -H 'x-agent-id: test'. Requests 1-1
       should return 200; 11-15 should return 429. After 60s the window resets."
 pause
 
-# Acquire Dex JWT — without it, ExtAuth rejects every request before the rate limiter sees it
-DEMO_USER="${DEMO_USER:-demo@example.com}"
+# Acquire Keycloak JWT — without it, ExtAuth rejects every request before the rate limiter sees it
+DEMO_USER="${DEMO_USER:-demo}"
 DEMO_PASS="${DEMO_PASS:-demo-pass}"
 CLIENT_ID="${CLIENT_ID:-agw-client}"
 CLIENT_SECRET="${CLIENT_SECRET:-agw-client-secret}"
-DEX_NS="${DEX_NS:-dex}"
 
-show "Acquire Dex JWT (required so requests pass ExtAuth and reach the rate limiter)"
-${KC} -n "${DEX_NS}" port-forward svc/dex 5556:5556 &>/dev/null &
-DEX_PF=$!
+show "Acquire Keycloak JWT (required so requests pass ExtAuth and reach the rate limiter)"
+
 sleep 3
-TOKEN=$(curl -s --max-time 5 -X POST http://localhost:5556/dex/token \
+TOKEN=$(curl -s --max-time 5 -X POST http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token \
   -d "grant_type=password" -d "username=${DEMO_USER}" -d "password=${DEMO_PASS}" \
   -d "scope=openid email groups" -d "client_id=${CLIENT_ID}" -d "client_secret=${CLIENT_SECRET}" 2>/dev/null \
   | python3 -c 'import sys,json;print(json.load(sys.stdin).get("id_token",""))' 2>/dev/null || echo "")
-kill ${DEX_PF} 2>/dev/null || true
 [[ -n "${TOKEN}" ]] && ok "Token acquired" || warn "No token — burst will show ExtAuth 302s, not rate-limit 429s."
 
 if [[ -n "${AGW_LB}" ]]; then

@@ -90,12 +90,12 @@ That is the whole pattern. Adding a third tenant is a copy-paste of the same fiv
 sequenceDiagram
     autonumber
     participant Agent as Agent (tenant-b-agent)
-    participant Dex as Dex (OIDC provider)
+    participant Keycloak as Keycloak (OIDC provider)
     participant AGW as AgentGateway
     participant Tool as MCP Tool Server
 
-    Agent->>Dex: POST /dex/token (username + password)
-    Dex-->>Agent: JWT (valid 30 min)
+    Agent->>Keycloak: POST /realms/solo-demo/protocol/openid-connect/token (username + password)
+    Keycloak-->>Agent: JWT (valid 30 min)
     Agent->>AGW: POST /mcp/tenant-b + Bearer JWT
     Note over AGW: 1. ExtAuth validates the JWT<br/>2. Looks up tenant-b's policy<br/>3. Checks tool-name against allowlist<br/>4. Decrements tenant-b's rate budget
     AGW->>Tool: Forward (only allowlisted tools)
@@ -127,7 +127,7 @@ What this example *does* prove live:
 | Per-tenant URL path | ✅ |
 | Per-tenant tool allowlist (different `tools/list` per path) | ✅ |
 | Per-tenant rate limit declared in policy | ✅ (live throttling: see example 05) |
-| Per-tenant identity (Dex users) | ✅ |
+| Per-tenant identity (Keycloak users) | ✅ |
 | Identity-bound path scoping (only tenant-a can use /mcp/tenant-a) | ❌ — see example 06 |
 
 ---
@@ -151,4 +151,4 @@ To remove what the example added:
 
 - [`examples/01-agw-to-agw-federation.md`](01-agw-to-agw-federation.md) — the cross-cluster pattern; complements this one (this is per-tenant *within* one cluster; that is per-cluster federation)
 - `scripts/05b-multi-tenancy.sh` — the actual install step
-- `scripts/03-dex.sh` — where the two tenant users are declared
+- `scripts/03b-keycloak.sh` — where the two tenant users are declared

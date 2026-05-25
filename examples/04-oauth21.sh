@@ -8,7 +8,7 @@ set -euo pipefail
 #
 #   ✅ PKCE on the auth-code flow — Keycloak accepts code_challenge / S256
 #   ✅ Client-credentials grant — Keycloak issues a token for mcp-service
-#      (this was the headline OAuth 2.1 gap when the demo ran on Dex
+#      (this was the headline OAuth 2.1 gap when the demo ran on Dex (now replaced by Keycloak across the install)
 #      v2.42; cutover to Keycloak closes it).
 #   ⚠️ RFC 9728 protected-resource-metadata — the field exists on
 #      AgentgatewayPolicy.backend.mcp.authentication.resourceMetadata

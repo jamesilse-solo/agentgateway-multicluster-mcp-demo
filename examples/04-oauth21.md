@@ -32,17 +32,17 @@ Three pieces matter for this demo:
 flowchart TB
     subgraph "Flow A — PKCE auth-code (browser users)"
       A1["Agent generates<br/>code_verifier + code_challenge"]
-      A2["Redirect to Dex /auth<br/>with code_challenge"]
+      A2["Redirect to Keycloak /auth<br/>with code_challenge"]
       A3["User logs in"]
-      A4["Dex redirects back<br/>with code"]
-      A5["Agent POSTs code +<br/>code_verifier to /dex/token"]
+      A4["Keycloak redirects back<br/>with code"]
+      A5["Agent POSTs code +<br/>code_verifier to /realms/solo-demo/protocol/openid-connect/token"]
       A6["Bearer JWT"]
       A1 --> A2 --> A3 --> A4 --> A5 --> A6
     end
 
     subgraph "Flow B — Client-credentials (service-to-service)"
       B1["Agent has client_id +<br/>client_secret"]
-      B2["POST /dex/token<br/>grant_type=client_credentials"]
+      B2["POST /realms/solo-demo/protocol/openid-connect/token<br/>grant_type=client_credentials"]
       B3["Bearer JWT"]
       B1 --> B2 --> B3
     end
@@ -66,16 +66,16 @@ flowchart TB
 ## What configuration adds each piece
 
 ### PKCE
-No gateway change. Dex *accepts* PKCE when the auth-code request carries a `code_challenge` and `code_challenge_method=S256`. The example script generates the verifier + challenge with `openssl` and walks the first step:
+No gateway change. Keycloak *accepts* PKCE when the auth-code request carries a `code_challenge` and `code_challenge_method=S256`. The example script generates the verifier + challenge with `openssl` and walks the first step:
 
 ```bash
 CODE_VERIFIER=$(openssl rand -base64 96 | tr -d "=+/\n" | cut -c1-128)
 CODE_CHALLENGE=$(printf "%s" "${CODE_VERIFIER}" | openssl dgst -sha256 -binary \
                   | base64 | tr "+/" "-_" | tr -d "=\n")
-curl "http://<lb>/dex/auth?...&code_challenge=${CODE_CHALLENGE}&code_challenge_method=S256"
+curl "http://<lb>/realms/solo-demo/protocol/openid-connect/auth?...&code_challenge=${CODE_CHALLENGE}&code_challenge_method=S256"
 ```
 
-For an MCP client (e.g. an editor) to actually finish this flow, the user would log into Dex in the browser; on the redirect back, the client posts the received `code` + the original `code_verifier` to `/dex/token`.
+For an MCP client (e.g. an editor) to actually finish this flow, the user would log into Keycloak in the browser; on the redirect back, the client posts the received `code` + the original `code_verifier` to `/realms/solo-demo/protocol/openid-connect/token`.
 
 ### Client-credentials (service-to-service)
 We add a second Keycloak client `mcp-service` whose `grantTypes` list includes `client_credentials`:
@@ -88,13 +88,13 @@ staticClients:
   grantTypes:
   - client_credentials
   redirectURIs:
-  - http://localhost/callback   # required by Dex but unused for this grant
+  - http://localhost/callback   # required by Keycloak but unused for this grant
 ```
 
 Then a service agent gets a token with no human in the loop:
 
 ```bash
-TOKEN=$(curl -s -X POST "http://<lb>/dex/token" \
+TOKEN=$(curl -s -X POST "http://<lb>/realms/solo-demo/protocol/openid-connect/token" \
   -d 'grant_type=client_credentials' \
   -d 'client_id=mcp-service' \
   -d 'client_secret=mcp-service-secret' \
@@ -108,14 +108,14 @@ We attach an `AgentgatewayPolicy` to the MCP backend with an `mcp.authentication
 backend:
   mcp:
     authentication:
-      issuer: "http://<lb>/dex"
+      issuer: "http://<lb>/realms/solo-demo"
       audiences:
       - "agw-client"
       - "mcp-service"
       resourceMetadata:
         resource: "http://<lb>/mcp"
         authorization_servers:
-        - "http://<lb>/dex"
+        - "http://<lb>/realms/solo-demo"
         bearer_methods_supported: ["header"]
         scopes_supported: ["openid","email","profile"]
         resource_documentation: "<URL>"
@@ -129,19 +129,19 @@ When a client hits `/mcp` without a token, the gateway's response (or 401 challe
 
 | Capability | Status |
 |---|---|
-| PKCE on auth-code flow | ✅ — Dex accepts the challenge, example demonstrates the handshake |
+| PKCE on auth-code flow | ✅ — Keycloak accepts the challenge, example demonstrates the handshake |
 | Client-credentials grant | ✅ — new `mcp-service` client; example acquires a token and hits `/mcp` |
 | RFC 9728 metadata | ✅ — JSON document fetchable at the well-known URL |
-| **Disable password grant** | ❌ — left enabled deliberately. `send-traffic.sh` depends on it. To remove, edit `dex-config` and delete the `enablePasswordDB` + `passwordConnector: local` lines |
-| **Refresh-token rotation** | ❌ — Dex supports it; not configured. Set `expiry.refreshTokens.reuseInterval: 0` in dex-config to require rotation on every refresh |
-| **Dynamic Client Registration (RFC 7591)** | ❌ — Dex does not implement DCR. Use admin-issued client credentials |
+| **Disable password grant** | ❌ — left enabled deliberately. `send-traffic.sh` depends on it. To remove, remove the password-grant flow from the Keycloak `agw-client` (kcadm.sh update clients/<id> -s 'directAccessGrantsEnabled=false') |
+| **Refresh-token rotation** | ❌ — Keycloak supports it; configure via Realm Settings → Tokens → Revoke refresh token to require rotation on every refresh |
+| **Dynamic Client Registration (RFC 7591)** | ❌ — The simple realm import is not DCR-enabled; admin-issued client credentials are used |
 
 ---
 
 ## Run it
 
 ```
-./scripts/05d-oauth21.sh        # Apply Dex changes + resource metadata
+./scripts/05d-oauth21.sh        # Apply Keycloak realm + resource metadata
 ./examples/04-oauth21.sh        # Run the three checks
 ./scripts/05d-oauth21.sh --cleanup
 ```

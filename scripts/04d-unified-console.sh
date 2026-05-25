@@ -238,7 +238,7 @@ Open in a browser:
 
   http://${AGW_LB}/console/
 
-You'll be redirected to Dex login (same as /mcp). Sign in with
+You will be redirected to Keycloak login (same as /mcp). Sign in with
 demo@example.com / demo-pass and the index page renders with cards
 for the four UIs.
 

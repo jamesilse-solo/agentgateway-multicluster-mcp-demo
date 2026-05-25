@@ -2,15 +2,15 @@
 set -euo pipefail
 
 ###############################################################################
-# demo.sh — MCP Demo: AgentGateway + Dex OIDC + Cross-Cluster MCP
+# demo.sh — MCP Demo: AgentGateway + Keycloak OIDC + Cross-Cluster MCP
 #
 # Interactive step-by-step demo script. Each section pauses for the presenter
 # to confirm before proceeding. Run from the repo root.
 #
 # Pre-conditions:
 #   - 01-install.sh + 02-configure.sh ran on both clusters
-#   - 03-dex.sh ran (Dex deployed on cluster1)
-#   - 05-extauth.sh ran (ExtAuth wired to Dex on cluster1)
+#   - 03b-keycloak.sh ran (Keycloak deployed on cluster1)
+#   - 05-extauth.sh ran (ExtAuth wired to Keycloak on cluster1)
 #   - 06-cross-cluster-mcp.sh ran (cross-cluster HTTPRoute configured)
 #
 # Usage:
@@ -22,7 +22,7 @@ set -euo pipefail
 C1="${CLUSTER1_CONTEXT:-cluster1}"
 C2="${CLUSTER2_CONTEXT:-cluster2}"
 AGW_NS="${AGW_NAMESPACE:-agentgateway-system}"
-DEX_NS="${DEX_NS:-dex}"
+KEYCLOAK_NS="${KEYCLOAK_NS:-keycloak}"
 AGW_LB="${AGW_LB:-}"
 
 # ─── Colours ─────────────────────────────────────────────────────────────────
@@ -75,7 +75,7 @@ banner "Pre-flight: Verifying all components"
 step "AgentGateway Hub (cluster1)"
 run "${KC1} get pods -n ${AGW_NS} --no-headers | grep -v '^$'"
 
-step "Dex OIDC provider (cluster1)"
+step "Keycloak OIDC provider (cluster1)"
 run "${KC1} get pods -n ${DEX_NS} --no-headers"
 
 step "ExtAuth resources"
@@ -99,10 +99,10 @@ pause
 ###############################################################################
 # SECTION 1 — OIDC AUTH (BROWSER FLOW)
 ###############################################################################
-banner "Flow 1 — User Auth: Browser Redirect (302 → Dex)"
+banner "Flow 1 — User Auth: Browser Redirect (302 → Keycloak)"
 
-info "AgentGateway is protecting all MCP traffic with OIDC via Dex."
-info "An unauthenticated request to /mcp gets redirected to the Dex login page."
+info "AgentGateway is protecting all MCP traffic with OIDC via Keycloak."
+info "An unauthenticated request to /mcp gets redirected to the Keycloak login page."
 echo ""
 
 step "Unauthenticated request → expect HTTP 302"
@@ -113,7 +113,7 @@ REDIRECT=$(curl -sI "http://${AGW_LB}/mcp" 2>/dev/null | grep -i "^location:" | 
 echo "   ${REDIRECT}"
 echo ""
 info "The redirect URL contains: client_id=agw-client, response_type=code"
-info "In a browser this opens the Dex login page."
+info "In a browser this opens the Keycloak login page."
 echo ""
 
 pause
@@ -124,31 +124,29 @@ pause
 banner "Flow 2 — MCP Client Auth: Bearer Token Session"
 
 info "MCP API clients (AI agents, SDKs) use the password grant to get a JWT"
-info "from Dex and pass it as a Bearer token. AgentGateway's ExtAuth validates"
+info "from Keycloak and pass it as a Bearer token. AgentGateway's ExtAuth validates"
 info "the JWT, then proxies the MCP session to the backend."
 echo ""
 
-step "Port-forwarding Dex locally for token acquisition"
-pkill -f "port-forward.*dex.*5556" 2>/dev/null || true
+step "Keycloak realm reachable via AGW LB (no port-forward needed)"
 sleep 1
-${KC1} -n "${DEX_NS}" port-forward svc/dex 5556:5556 &
 PF_DEX_PID=$!
 sleep 4
 
-step "Step 1 — Acquire JWT from Dex (ROPC / password grant)"
-info "  POST http://localhost:5556/dex/token"
+step "Step 1 — Acquire JWT from Keycloak (password grant)"
+info "  POST http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token"
 info "  grant_type=password  client_id=agw-client  user=demo@example.com"
-TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
+TOKEN=$(curl -s -X POST http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   -d 'grant_type=password&username=demo@example.com&password=demo-pass' \
   -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
   | python3 -c "import sys,json; t=json.load(sys.stdin); print(t.get('access_token','ERROR'))" 2>/dev/null)
 
 if [[ "${TOKEN}" == "ERROR" || -z "${TOKEN}" ]]; then
-  warn "Token acquisition failed — check Dex is running and port-forward is up"
+  warn "Token acquisition failed — check Keycloak is running"
   TOKEN=""
 else
-  ok "JWT acquired  iss=http://dex.dex.svc.cluster.local:5556/dex"
+  ok "JWT acquired  iss=http://${AGW_LB}/realms/solo-demo"
   echo "   ${TOKEN:0:72}..."
 fi
 echo ""
@@ -309,12 +307,12 @@ else
 
   step "Querying AgentRegistry catalog via its MCP endpoint (port 31313)"
   info "  POST http://localhost:31313/mcp   method: initialize"
-  info "  Auth: Bearer token from Dex (AREG enforces OIDC — same demo user)"
+  info "  Auth: Bearer token from Keycloak (AREG enforces OIDC — same demo user)"
 
   AREG_INIT_TOKEN="${TOKEN:-}"
   if [[ -z "${AREG_INIT_TOKEN}" ]]; then
     # Re-acquire token if Act 2 was skipped or token expired
-    AREG_INIT_TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
+    AREG_INIT_TOKEN=$(curl -s -X POST http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token \
       -H 'Content-Type: application/x-www-form-urlencoded' \
       -d 'grant_type=password&username=demo@example.com&password=demo-pass' \
       -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
@@ -362,7 +360,7 @@ else
   pause
 
   step "AgentRegistry accessible via AgentGateway hub at /mcp/registry"
-  info "  Any MCP client that authenticates with Dex can reach the catalog"
+  info "  Any MCP client that authenticates with Keycloak can reach the catalog"
   info "  through the same hub gateway — no separate auth config needed."
 
   if [[ -n "${TOKEN:-}" ]]; then
@@ -371,7 +369,7 @@ else
       "http://${AGW_LB}/mcp/registry" 2>/dev/null)
     echo "   GET http://${AGW_LB}/mcp/registry → HTTP ${AREG_AGW_CODE}"
     if [[ "${AREG_AGW_CODE}" == "200" || "${AREG_AGW_CODE}" == "400" ]]; then
-      ok "AgentRegistry reachable through AGW hub (auth enforced by Dex ExtAuth)"
+      ok "AgentRegistry reachable through AGW hub (auth enforced by Keycloak ExtAuth)"
     else
       warn "HTTP ${AREG_AGW_CODE} — check areg-mcp-route HTTPRoute status"
     fi
@@ -388,8 +386,8 @@ banner "Demo Summary"
 
 info "What we showed:"
 echo ""
-echo "   1. Dex OIDC protecting MCP endpoints on AgentGateway"
-echo "      - Unauthenticated → HTTP 302 → Dex login page"
+echo "   1. Keycloak OIDC protecting MCP endpoints on AgentGateway"
+echo "      - Unauthenticated → HTTP 302 → Keycloak login page"
 echo "      - JWT Bearer token → MCP session established, tools listed"
 echo "      - Full MCP initialize + tools/list through authenticated gateway"
 echo ""
@@ -412,7 +410,7 @@ info "Endpoints:"
 echo "   MCP (local cluster1):   http://${AGW_LB}/mcp"
 echo "   MCP (remote cluster2):  http://${AGW_LB}/mcp/remote"
 echo "   AgentRegistry catalog:  http://${AGW_LB}/mcp/registry"
-echo "   Dex OIDC (internal):    http://dex.dex.svc.cluster.local:5556/dex"
+echo "   Keycloak realm:         http://${AGW_LB}/realms/solo-demo"
 echo ""
 info "Demo credentials:"
 echo "   User:    demo@example.com / ${DEX_USER_PASSWORD:-demo-pass}"

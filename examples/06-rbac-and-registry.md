@@ -16,7 +16,7 @@ In a real deployment that's a problem: tenant A could discover tenant B's URL an
 
 ## How OAuth audiences solve this
 
-When an identity provider (Dex) issues a JWT, it can stamp the JWT with an **audience** — the intended consumer of the token. The convention is one audience per OAuth client. If tenant-a logs in via the `tenant-a-client` Keycloak client, the JWT has `aud: tenant-a-client`. Tenant-b logs in via `tenant-b-client`, JWT has `aud: tenant-b-client`.
+When an identity provider (Keycloak) issues a JWT, it can stamp the JWT with an **audience** — the intended consumer of the token. The convention is one audience per OAuth client. If tenant-a logs in via the `tenant-a-client` Keycloak client, the JWT has `aud: tenant-a-client`. Tenant-b logs in via `tenant-b-client`, JWT has `aud: tenant-b-client`.
 
 The gateway can then declare, per backend, *which audiences it accepts*. A JWT with the wrong audience is rejected at the gateway with HTTP 401 — the upstream tool server never sees it.
 
@@ -24,15 +24,15 @@ The gateway can then declare, per backend, *which audiences it accepts*. A JWT w
 flowchart LR
     AgentA["tenant-a-agent"]
     AgentB["tenant-b-agent"]
-    Dex["Dex"]
+    Keycloak["Keycloak"]
     AGW["AgentGateway"]
     BackendA["Backend mcp-backends-tenant-a<br/>accepts only aud=tenant-a-client"]
     BackendB["Backend mcp-backends-tenant-b<br/>accepts only aud=tenant-b-client"]
 
-    AgentA -- "log in via tenant-a-client" --> Dex
-    AgentB -- "log in via tenant-b-client" --> Dex
-    Dex -- "JWT aud=tenant-a-client" --> AgentA
-    Dex -- "JWT aud=tenant-b-client" --> AgentB
+    AgentA -- "log in via tenant-a-client" --> Keycloak
+    AgentB -- "log in via tenant-b-client" --> Keycloak
+    Keycloak -- "JWT aud=tenant-a-client" --> AgentA
+    Keycloak -- "JWT aud=tenant-b-client" --> AgentB
 
     AgentA -- "POST /mcp/tenant-a + JWT" --> AGW
     AgentA -. "POST /mcp/tenant-b + JWT (rejected)" .-> AGW
@@ -64,7 +64,7 @@ spec:
   backend:
     mcp:
       authentication:
-        issuer: "http://<lb>/dex"
+        issuer: "http://<lb>/realms/solo-demo"
         audiences:
         - "tenant-a-client"      # ← only this audience is allowed
 ```

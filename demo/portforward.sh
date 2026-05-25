@@ -17,7 +17,7 @@ set -euo pipefail
 #      Cross-cluster federation, ambient mesh topology,
 #      east-west gateway health, cluster registration.
 #
-#   4. Dex OIDC IdP                    → http://localhost:5556
+#   4. Keycloak Admin Console            → http://localhost:8081
 #      Issues JWTs for the demo (password grant + browser-flow).
 #      Demo creds: demo@example.com / demo-pass / agw-client / agw-client-secret.
 #
@@ -32,7 +32,6 @@ KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1}"
 AGW_NAMESPACE="${AGW_NAMESPACE:-agentgateway-system}"
 AREG_NAMESPACE="${AREG_NAMESPACE:-agentregistry}"
 GM_NAMESPACE="${GM_NAMESPACE:-gloo-mesh}"
-DEX_NAMESPACE="${DEX_NAMESPACE:-dex}"
 KEYCLOAK_NAMESPACE="${KEYCLOAK_NAMESPACE:-keycloak}"
 AREG_SVC="${AREG_SVC:-agentregistry-agentregistry-enterprise}"
 AGW_MGMT_SVC="${AGW_MGMT_SVC:-solo-enterprise-ui}"
@@ -62,7 +61,6 @@ pkill -f "port-forward.*agentregistry.*8080"      2>/dev/null || true
 pkill -f "port-forward.*solo-enterprise-ui.*4000" 2>/dev/null || true
 pkill -f "port-forward.*gloo-mesh-ui.*8090"       2>/dev/null || true
 pkill -f "port-forward.*keycloak.*8081"           2>/dev/null || true
-pkill -f "port-forward.*dex.*5556"                2>/dev/null || true
 sleep 1
 
 ###############################################################################
@@ -149,19 +147,8 @@ if ${KC} -n "${KEYCLOAK_NAMESPACE}" get svc keycloak >/dev/null 2>&1; then
     sleep 1
   done
   [[ "${KC_OK}" == "false" ]] && warn "Keycloak not responding — check: ${KC} -n ${KEYCLOAK_NAMESPACE} get pod -l app=keycloak"
-elif ${KC} -n "${DEX_NAMESPACE}" get svc dex >/dev/null 2>&1; then
-  # Fallback: Dex is still installed (legacy path)
-  hdr "4. Dex OIDC IdP (legacy)"
-  ${KC} -n "${DEX_NAMESPACE}" port-forward svc/dex 5556:5556 &>/dev/null &
-  PF_DEX=$!
-  echo -e "  Started (PID ${PF_DEX}), waiting for readiness..."
-  for i in $(seq 1 15); do
-    curl -s --max-time 2 "http://localhost:5556/dex/.well-known/openid-configuration" &>/dev/null && \
-      { ok "Dex IdP ready — http://localhost:5556/dex"; break; }
-    sleep 1
-  done
 else
-  warn "No IdP installed (Keycloak nor Dex found). Run scripts/03b-keycloak.sh first."
+  warn "Keycloak is not installed. Run scripts/03b-keycloak.sh."
 fi
 
 ###############################################################################
@@ -202,7 +189,7 @@ echo -e "${BOLD}${CYAN}╠══════════════════
 echo -e "${BOLD}${CYAN}║${RESET}  AgentRegistry UI         →  ${GREEN}http://localhost:8080${RESET}             ${BOLD}${CYAN}║${RESET}"
 echo -e "${BOLD}${CYAN}║${RESET}  AgentGateway Enterprise  →  ${GREEN}http://localhost:4000${RESET}             ${BOLD}${CYAN}║${RESET}"
 echo -e "${BOLD}${CYAN}║${RESET}  Gloo Mesh UI             →  ${GREEN}http://localhost:8090${RESET}             ${BOLD}${CYAN}║${RESET}"
-echo -e "${BOLD}${CYAN}║${RESET}  Dex IdP (token endpoint) →  ${GREEN}http://localhost:5556/dex${RESET}         ${BOLD}${CYAN}║${RESET}"
+echo -e "${BOLD}${CYAN}║${RESET}  Keycloak Admin Console   →  ${GREEN}http://localhost:8081${RESET}             ${BOLD}${CYAN}║${RESET}"
 if [[ -n "${AGW_LB}" ]]; then
 echo -e "${BOLD}${CYAN}║${RESET}  Cluster 1 /mcp           →  ${GREEN}http://${AGW_LB}/mcp${RESET}"
 fi
