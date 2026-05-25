@@ -10,12 +10,15 @@ set -euo pipefail
 #   ✅ Client-credentials grant — Keycloak issues a token for mcp-service
 #      (this was the headline OAuth 2.1 gap when the demo ran on Dex (now replaced by Keycloak across the install)
 #      v2.42; cutover to Keycloak closes it).
-#   ⚠️ RFC 9728 protected-resource-metadata — the field exists on
-#      AgentgatewayPolicy.backend.mcp.authentication.resourceMetadata
-#      and is accepted by the CRD, but the well-known endpoint is not
-#      served by AGW v2.3.3 (returns 302 / OIDC redirect).
+#   ✅ RFC 9728 protected-resource-metadata — served live at
+#      /.well-known/oauth-protected-resource/mcp via a dedicated
+#      `mcp-wellknown` HTTPRoute + EnterpriseAgentgatewayPolicy using
+#      traffic.jwtAuthentication.mcp.resourceMetadata
+#      (wired by scripts/05d-oauth21.sh).
 #
-# This script reports honestly on each.
+#   ✅ RFC 8414 authorization-server-metadata — also served live at
+#      /.well-known/oauth-authorization-server/mcp; AGW proxies and
+#      transforms Keycloak's OIDC discovery document.
 ###############################################################################
 
 KUBE_CONTEXT="${KUBE_CONTEXT:-cluster1}"
@@ -81,35 +84,49 @@ fi
 # Check 3 — RFC 9728 protected-resource-metadata
 ###############################################################################
 banner "Check 3 — RFC 9728 protected-resource-metadata endpoint"
-for RM_PATH in /.well-known/oauth-protected-resource /mcp/.well-known/oauth-protected-resource; do
-  HTTP=$(curl -s -o /dev/null -w "%{http_code}" "http://${AGW_LB}${RM_PATH}")
-  if [[ "${HTTP}" == "200" ]]; then
-    ok "GET ${RM_PATH} → 200"
-    curl -s "http://${AGW_LB}${RM_PATH}" | jq -C '.' | sed 's/^/      /'
-    break
-  else
-    warn "GET ${RM_PATH} → HTTP ${HTTP} (not the JSON metadata document)"
-  fi
-done
-warn "AGW v2.3.3 accepts the resourceMetadata field on the CRD but does not"
-warn "publish the well-known endpoint at the gateway LB. The CRD plumbing is"
-warn "ready; the runtime support is product-version pending."
+RM_PATH="/.well-known/oauth-protected-resource/mcp"
+RM_BODY=$(curl -s "http://${AGW_LB}${RM_PATH}")
+RM_HTTP=$(curl -s -o /dev/null -w "%{http_code}" "http://${AGW_LB}${RM_PATH}")
+if [[ "${RM_HTTP}" == "200" ]] && echo "${RM_BODY}" | jq -e '.resource and .authorization_servers' >/dev/null 2>&1; then
+  ok "GET ${RM_PATH} → 200, RFC 9728 JSON"
+  echo "${RM_BODY}" | jq -C '.' | sed 's/^/      /'
+else
+  bad "GET ${RM_PATH} → HTTP ${RM_HTTP} (run scripts/05d-oauth21.sh to wire the metadata route)"
+fi
+
+###############################################################################
+# Check 4 — RFC 8414 authorization-server-metadata
+###############################################################################
+banner "Check 4 — RFC 8414 authorization-server-metadata endpoint"
+AS_PATH="/.well-known/oauth-authorization-server/mcp"
+AS_BODY=$(curl -s "http://${AGW_LB}${AS_PATH}")
+AS_HTTP=$(curl -s -o /dev/null -w "%{http_code}" "http://${AGW_LB}${AS_PATH}")
+if [[ "${AS_HTTP}" == "200" ]] && echo "${AS_BODY}" | jq -e '.issuer and .authorization_endpoint and .token_endpoint' >/dev/null 2>&1; then
+  ok "GET ${AS_PATH} → 200, has issuer + authorization_endpoint + token_endpoint"
+  echo "${AS_BODY}" | jq -C '{issuer, authorization_endpoint, token_endpoint, jwks_uri, response_types_supported}' | sed 's/^/      /'
+else
+  bad "GET ${AS_PATH} → HTTP ${AS_HTTP}"
+fi
 
 ###############################################################################
 # Summary
 ###############################################################################
 banner "What works today, and what to know"
 cat <<EOF
-  Live (validated):
+  Live (validated against the cluster):
     ✓ PKCE on auth-code flow (Keycloak accepts code_challenge + S256)
-    ✓ Client-credentials grant (Keycloak realm mcp-service client returns
+    ✓ Client-credentials grant (Keycloak mcp-service client returns
       a JWT — the m2m flow OAuth 2.1 prefers over password grant)
-    ✓ AgentgatewayPolicy.mcp.authentication.resourceMetadata field on
-      the policy (config-ready for when AGW publishes the well-known)
+    ✓ RFC 9728 protected-resource-metadata served at
+      /.well-known/oauth-protected-resource/mcp
+    ✓ RFC 8414 authorization-server-metadata served at
+      /.well-known/oauth-authorization-server/mcp
 
-  Product gaps (honest):
-    ⚠ AGW v2.3.3 → /.well-known/oauth-protected-resource not served at
-      the gateway LB. Track for a future AGW release.
+  Configuration (in this POC):
+    • Dedicated mcp-wellknown HTTPRoute (anonymous, two exact paths)
+    • EnterpriseAgentgatewayPolicy mcp-resource-metadata using
+      traffic.jwtAuthentication.mcp.{provider:Keycloak, resourceMetadata}
+    • /mcp itself keeps its existing ExtAuth (auth-code session cookies)
 
   See examples/04-oauth21.md for the full breakdown.
 EOF

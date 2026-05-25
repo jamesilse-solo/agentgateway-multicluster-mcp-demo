@@ -112,23 +112,44 @@ Notice what is happening:
 
 ---
 
-## Limit of this example
+## Strict cross-tenant enforcement
 
-A valid login token from *any* user can hit *either* path right now. So a tenant-a user could in principle call `/mcp/tenant-b` and get tenant-b's policy applied. The convention "tenant-a uses /mcp/tenant-a" is operational rather than enforced.
+The path-to-identity binding is enforced at the gateway. Each tenant has its own Keycloak client (`tenant-a-client`, `tenant-b-client`), each issuing tokens with that client's name as the `aud` claim. `scripts/05e-rbac-strict.sh` creates a per-tenant `AuthConfig` for each path:
 
-Closing that gap — making the path-to-identity binding *strict* — needs identity-aware authorization (e.g. an OPA bundle that reads the JWT claim and decides whether the user is allowed to use that path). That is what example 06 (RBAC + Registry) adds.
+```yaml
+apiVersion: extauth.solo.io/v1
+kind: AuthConfig
+metadata:
+  name: oidc-tenant-a
+spec:
+  configs:
+  - oauth2:
+      oidcAuthorizationCode:
+        clientId: tenant-a-client
+        issuerUrl: http://<lb>/realms/solo-demo
+        ...
+```
 
-Similarly, the per-tenant **rate limit** in this example is declared in the policy (you can see it with `kubectl get enterpriseagentgatewaypolicy multi-tenancy-tenant-b -o yaml`) but live enforcement under load is exercised in example 05 (Observability + Resilience).
+…and rewires each tenant's `EnterpriseAgentgatewayPolicy` to reference its own AuthConfig:
 
-What this example *does* prove live:
+```
+/mcp/tenant-a → multi-tenancy-tenant-a EAGP → oidc-tenant-a (aud=tenant-a-client)
+/mcp/tenant-b → multi-tenancy-tenant-b EAGP → oidc-tenant-b (aud=tenant-b-client)
+```
+
+A `tenant-a-client`-issued JWT presented at `/mcp/tenant-b` fails token validation at the ExtAuth layer (wrong audience) and the upstream MCP server is never reached. The block is cryptographic — there is no shared secret between the two tenant paths.
+
+The per-tenant **rate limit** is declared in each policy (you can see it with `kubectl get enterpriseagentgatewaypolicy multi-tenancy-tenant-b -o yaml`); live throttling under load is exercised in example 05 (Observability + Resilience).
+
+What this example proves live:
 
 | Capability | Demonstrated |
 |---|---|
 | Per-tenant URL path | ✅ |
 | Per-tenant tool allowlist (different `tools/list` per path) | ✅ |
 | Per-tenant rate limit declared in policy | ✅ (live throttling: see example 05) |
-| Per-tenant identity (Keycloak users) | ✅ |
-| Identity-bound path scoping (only tenant-a can use /mcp/tenant-a) | ❌ — see example 06 |
+| Per-tenant identity (Keycloak per-tenant clients) | ✅ |
+| Identity-bound path scoping (cross-tenant calls are blocked at ExtAuth) | ✅ — strict audience enforcement via `scripts/05e-rbac-strict.sh` |
 
 ---
 

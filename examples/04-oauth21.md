@@ -102,26 +102,67 @@ TOKEN=$(curl -s -X POST "http://<lb>/realms/solo-demo/protocol/openid-connect/to
 ```
 
 ### RFC 9728 protected-resource-metadata
-We attach an `AgentgatewayPolicy` to the MCP backend with an `mcp.authentication.resourceMetadata` block. The gateway publishes the document at `/.well-known/oauth-protected-resource`:
+`scripts/05d-oauth21.sh` creates a dedicated `mcp-wellknown` HTTPRoute (two exact path matches, not behind ExtAuth) and attaches an `EnterpriseAgentgatewayPolicy` using `traffic.jwtAuthentication.mcp` with `provider: Keycloak` + `resourceMetadata`. AGW's MCP-auth handler intercepts the well-known paths and returns the RFC-compliant JSON itself — the backend reference is unused for these paths.
 
 ```yaml
-backend:
-  mcp:
-    authentication:
-      issuer: "http://<lb>/realms/solo-demo"
-      audiences:
-      - "agw-client"
-      - "mcp-service"
-      resourceMetadata:
-        resource: "http://<lb>/mcp"
-        authorization_servers:
-        - "http://<lb>/realms/solo-demo"
-        bearer_methods_supported: ["header"]
-        scopes_supported: ["openid","email","profile"]
-        resource_documentation: "<URL>"
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: mcp-wellknown
+spec:
+  parentRefs:
+  - {name: agentgateway-hub, namespace: agentgateway-system}
+  rules:
+  - matches:
+    - {path: {type: Exact, value: /.well-known/oauth-protected-resource/mcp}}
+    - {path: {type: Exact, value: /.well-known/oauth-authorization-server/mcp}}
+    backendRefs:
+    - {group: "", kind: Service, name: mcp-server-everything, port: 80}
+---
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: mcp-resource-metadata
+spec:
+  targetRefs:
+  - {group: gateway.networking.k8s.io, kind: HTTPRoute, name: mcp-wellknown}
+  traffic:
+    jwtAuthentication:
+      mode: Strict
+      providers:
+      - issuer: http://<lb>/realms/solo-demo
+        audiences: [agw-client]
+        jwks:
+          remote:
+            backendRef: {kind: Service, name: keycloak, namespace: keycloak, port: 8080}
+            jwksPath: /realms/solo-demo/protocol/openid-connect/certs
+            cacheDuration: 5m
+      mcp:
+        provider: Keycloak
+        resourceMetadata:
+          resource: http://<lb>/mcp
+          scopesSupported: [openid, email, profile]
+          bearerMethodsSupported: [header]
+          resourceDocumentation: https://docs.solo.io/agentgateway/
 ```
 
-When a client hits `/mcp` without a token, the gateway's response (or 401 challenge) points at this URL.
+Live response from the cluster:
+
+```bash
+$ curl http://<lb>/.well-known/oauth-protected-resource/mcp
+{
+  "resource": "http://<lb>/mcp",
+  "authorization_servers": ["http://<lb>/mcp"],
+  "mcp_protocol_version": "2025-06-18",
+  "resource_type": "mcp-server",
+  "bearer_methods_supported": ["header"],
+  "scopes_supported": ["openid", "email", "profile"]
+}
+```
+
+The companion `/.well-known/oauth-authorization-server/mcp` returns Keycloak's OpenID-configuration document (AGW proxies + transforms it). An MCP client that follows the standard 401 → metadata → auth-server discovery dance can now wire itself up without any out-of-band configuration.
+
+**Note:** the well-known route is intentionally not in `oidc-extauth.targetRefs` — public discovery is the point. The `/mcp` route itself still requires auth (session cookie via ExtAuth, or Bearer JWT).
 
 ---
 
@@ -130,9 +171,10 @@ When a client hits `/mcp` without a token, the gateway's response (or 401 challe
 | Capability | Status |
 |---|---|
 | PKCE on auth-code flow | ✅ — Keycloak accepts the challenge, example demonstrates the handshake |
-| Client-credentials grant | ✅ — new `mcp-service` client; example acquires a token and hits `/mcp` |
-| RFC 9728 metadata | ✅ — JSON document fetchable at the well-known URL |
-| **Disable password grant** | ❌ — left enabled deliberately. `send-traffic.sh` depends on it. To remove, remove the password-grant flow from the Keycloak `agw-client` (kcadm.sh update clients/<id> -s 'directAccessGrantsEnabled=false') |
+| Client-credentials grant | ✅ — `mcp-service` Keycloak client; example acquires a token via `grant_type=client_credentials` |
+| RFC 9728 protected-resource-metadata | ✅ — live at `/.well-known/oauth-protected-resource/mcp` on the AGW LB (200, RFC-compliant JSON) |
+| RFC 8414 authorization-server-metadata | ✅ — live at `/.well-known/oauth-authorization-server/mcp` (AGW proxies + transforms Keycloak's OIDC discovery doc) |
+| **Disable password grant** | ❌ — left enabled deliberately. `send-traffic.sh` depends on it. To remove, set `directAccessGrantsEnabled=false` on the Keycloak `agw-client` (`kcadm.sh update clients/<id>`) |
 | **Refresh-token rotation** | ❌ — Keycloak supports it; configure via Realm Settings → Tokens → Revoke refresh token to require rotation on every refresh |
 | **Dynamic Client Registration (RFC 7591)** | ❌ — The simple realm import is not DCR-enabled; admin-issued client credentials are used |
 
