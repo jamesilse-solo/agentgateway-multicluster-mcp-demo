@@ -1381,75 +1381,13 @@ spec:
   </div>
 
   <!-- ═══════════════════════════════════════════════════════ -->
-  <!-- SLIDE 16 — KEYCLOAK CUTOVER                              -->
-  <!-- ═══════════════════════════════════════════════════════ -->
-  <div class="slide" id="slide-16-keycloak">
-    <div class="topbar">
-      <span class="wordmark">Solo.io</span>
-      <span class="topbar-tag">IDENTITY PROVIDER</span>
-    </div>
-    <div class="slide-body">
-      <div class="overline">From Dex to Keycloak</div>
-      <h2 class="section-title">One realm. One install step. <span>Production-grade IdP.</span></h2>
-      <p class="section-sub">The POC originally ran on Dex (configmap-driven static-clients IdP) — fine for password grant but blocked on OAuth 2.1's <code>client_credentials</code>. Keycloak closes that gap and adds production capabilities: refresh-token rotation, Dynamic Client Registration, fine-grained admin RBAC, per-client audience scopes.</p>
-
-      <div class="two-col" style="margin-top:1.25rem;grid-template-columns:1fr 1.3fr;">
-        <div class="two-col-left">
-          <ul class="bullet-list">
-            <li><strong>One install step</strong> — <code>scripts/03b-keycloak.sh</code> deploys Keycloak 26 with realm import. Realm <code>solo-demo</code>, four clients (agw-client, mcp-service, tenant-a-client, tenant-b-client), three users</li>
-            <li><strong>Same gateway plumbing</strong> — Keycloak's service is wired through the AGW LB at <code>/realms/*</code> exactly like Dex was at <code>/dex/*</code>. External MCP clients see the same shape of OIDC discovery</li>
-            <li><strong>Cutover via env var</strong> — <code>IDP=keycloak ./scripts/05-extauth.sh</code> swaps the AuthConfig issuer. <code>IDP=dex</code> remains as a fallback for users who still have Dex installed</li>
-            <li><strong>Client-credentials grant works</strong> — Keycloak's <code>mcp-service</code> client has <code>serviceAccountsEnabled: true</code>. A real JWT is returned for m2m flows</li>
-            <li><strong>Admin console included</strong> — <code>./demo/portforward.sh</code> port-forwards <code>localhost:8081</code> for the Keycloak admin UI (admin / admin)</li>
-            <li><strong>Same JWT shape downstream</strong> — Examples and policies that worked with Dex tokens work unchanged with Keycloak tokens. ExtAuth validates the same way; only the issuer URL changes</li>
-          </ul>
-        </div>
-        <div class="two-col-right">
-          <div class="card" style="padding:1rem 1.2rem;">
-            <span class="mono-tag">DEX → KEYCLOAK SIDE-BY-SIDE</span>
-            <table style="width:100%;font-family:'DM Mono',monospace;font-size:0.72rem;color:#B5B8CD;border-collapse:collapse;margin-top:0.5rem;">
-              <tr style="border-bottom:1px solid rgba(92,97,120,0.3);">
-                <td style="padding:0.4rem 0;color:#5C6178;"></td>
-                <td style="padding:0.4rem 0;color:#FFA785;">Dex v2.42</td>
-                <td style="padding:0.4rem 0;color:#1FEEB3;">Keycloak 26</td>
-              </tr>
-              <tr><td style="padding:0.3rem 0;color:#9DA1BD;">Password grant</td><td style="color:#1FEEB3;">✓</td><td style="color:#1FEEB3;">✓</td></tr>
-              <tr><td style="padding:0.3rem 0;color:#9DA1BD;">PKCE auth-code</td><td style="color:#1FEEB3;">✓</td><td style="color:#1FEEB3;">✓</td></tr>
-              <tr><td style="padding:0.3rem 0;color:#9DA1BD;">Client-credentials</td><td style="color:#FFA785;">✗</td><td style="color:#1FEEB3;">✓</td></tr>
-              <tr><td style="padding:0.3rem 0;color:#9DA1BD;">Refresh-token rotation</td><td style="color:#5C6178;">—</td><td style="color:#1FEEB3;">✓</td></tr>
-              <tr><td style="padding:0.3rem 0;color:#9DA1BD;">Dynamic Client Reg</td><td style="color:#FFA785;">✗</td><td style="color:#1FEEB3;">✓</td></tr>
-              <tr><td style="padding:0.3rem 0;color:#9DA1BD;">Admin console</td><td style="color:#FFA785;">✗</td><td style="color:#1FEEB3;">✓</td></tr>
-              <tr><td style="padding:0.3rem 0;color:#9DA1BD;">Realm import</td><td style="color:#5C6178;">—</td><td style="color:#1FEEB3;">JSON</td></tr>
-            </table>
-          </div>
-          <div class="card blue" style="padding:0.9rem 1.1rem;margin-top:0.6rem;">
-            <span class="mono-tag blue">EXTERNAL ENDPOINTS</span>
-            <div style="font-family:'DM Mono',monospace;font-size:0.7rem;color:#B5B8CD;line-height:1.85;margin-top:0.4rem;">
-              <div><span style="color:#20B7F3;">discovery:</span> /realms/solo-demo/.well-known/openid-configuration</div>
-              <div><span style="color:#20B7F3;">token:</span> /realms/solo-demo/protocol/openid-connect/token</div>
-              <div><span style="color:#20B7F3;">auth:</span>     /realms/solo-demo/protocol/openid-connect/auth</div>
-              <div><span style="color:#20B7F3;">jwks:</span>     /realms/solo-demo/protocol/openid-connect/certs</div>
-            </div>
-          </div>
-          <div class="card" style="padding:0.9rem;margin-top:0.5rem;">
-            <span class="mono-tag">KEY MESSAGE</span>
-            <p style="font-size:0.82rem;color:#B5B8CD;line-height:1.55;margin-top:0.3rem;">
-              The IdP is a swappable component. Customers running Okta / Azure AD / PingFederate can substitute their own with the same cutover env var.
-            </p>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ═══════════════════════════════════════════════════════ -->
 </div><!-- /deck -->
 
 <!-- ── Navigation ── -->
 <nav class="slide-nav" id="slideNav">
   <button id="prevBtn" onclick="changeSlide(-1)" disabled>&#8592;</button>
   <div style="display:flex;gap:0.5rem;align-items:center;" id="dotContainer"></div>
-  <span class="slide-counter" id="counter">1 / 16</span>
+  <span class="slide-counter" id="counter">1 / 15</span>
   <button id="nextBtn" onclick="changeSlide(1)">&#8594;</button>
 </nav>
 
