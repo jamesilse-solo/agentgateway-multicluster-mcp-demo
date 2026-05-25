@@ -16,6 +16,8 @@ The customer's audience cares about three things in this phase:
 | AUTH-02 | Tool-Level RBAC (OPA) | OPA Rego policy parses the JSON-RPC tool name + JWT claims. `delete_database` is blocked for `role: agent`, allowed for `role: admin`. | OPA ConfigMap + AuthConfig referenced (left in place; demo state) |
 | AUTH-03 | Two-Level Tool Filtering | Filtering at server-level (which servers an agent can see) AND tool-level (which tools within a server). `tools/list` and `tools/call` reflect both layers. | Optional policy resources (ranged within the test) |
 | AUTH-04 | Token Exchange / On-Behalf-Of | Gateway exchanges the agent's identity token for a downstream token (RFC 8693) bound to the upstream SaaS. Upstream sees a user-derived token, not a static credential. | None (test is read-only against an existing exchange config) |
+| AUTH-05 | **OAuth 2.1 hardening** | PKCE on auth-code flow is accepted by Dex (`code_challenge_method=S256`); client-credentials grant via a dedicated `mcp-service` Dex client returns a JWT that the gateway accepts on `/mcp`; RFC 9728 protected-resource-metadata is fetchable at `/.well-known/oauth-protected-resource`. | Applies `scripts/05d-oauth21.sh`; `--cleanup` reverts |
+| AUTH-06 | **Identity-bound path scoping** | Per-tenant Dex clients issue audience-distinct JWTs; cross-tenant calls (a `tenant-a` JWT hitting `/mcp/tenant-b`) return HTTP 401 at the gateway. | Applies `scripts/05e-rbac-strict.sh`; `--cleanup` reverts |
 
 ## Run
 

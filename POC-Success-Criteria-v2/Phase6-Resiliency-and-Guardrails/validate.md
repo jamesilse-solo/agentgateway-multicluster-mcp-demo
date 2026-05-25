@@ -1,18 +1,20 @@
 # Phase 6 — Resiliency & Guardrails
 
-> Validates **GR-01, GR-02** — the gateway-layer protections that keep the platform stable when traffic spikes or content needs inspection. This phase intentionally trims four v1 tests down to two; schema validation and graceful-error-translation tested default behaviour, not value claims.
+> Validates **GR-01, GR-02, GR-03** — the gateway-layer protections that keep the platform stable when traffic spikes or content needs inspection.
 
 ## What this phase proves
 
-1. **Pluggable content guardrails.** The gateway can hand off the JSON-RPC body to an external webhook (PII scrubber, prompt-injection detector, F5 Calypso) before forwarding it. The customer can reuse existing DLP/guardrail investments instead of buying a new product. (GR-01)
+1. **Native content guardrails.** The gateway ships with a regex catalogue (SSN, credit card, phone, email, ca SIN) and accepts custom patterns. A matching request body is rejected before the upstream MCP server is touched — no custom ExtProc service required. (GR-01)
 2. **Global rate limiting backed by Redis.** Counters live in a shared Redis (`ext-cache`), so limits are coherent across gateway replicas. The customer specifically called out wanting *global* limits, not per-pod, in the 2026-04-30 sync. (GR-02)
+3. **Vendor guardrail back-ends are pluggable.** The same `mcp.guard` field accepts Bedrock Guardrails, Azure Content Safety, OpenAI Moderation, Google Model Armor, or a custom webhook — customers can reuse existing DLP investments. (GR-03, informational)
 
 ## Tests in this phase
 
 | ID | Requirement | What success proves | Net cluster change |
 |----|-------------|---------------------|--------------------|
-| GR-01 | External Guardrails Webhook (ExtProc) | The gateway streams the request body to an external webhook for inspection/transformation; webhook decisions (allow / sanitize / block) propagate. | None (assumes a `GatewayExtension` is already configured) |
+| GR-01 | **Native content guardrails (regex PII)** | The gateway rejects a request whose body contains a SSN or credit card before the upstream MCP server is reached. Uses `AgentgatewayPolicy.backend.mcp.guard.request.regex` with built-in rules — no custom ExtProc. | Applies `scripts/05c-guardrails.sh`; `--cleanup` reverts |
 | GR-02 | Global Rate Limiting (Redis) | A `RateLimitConfig` of N requests/min is enforced *globally* across replicas via the shared Redis cache. Burst above the limit returns 429. | A `RateLimitConfig` resource is applied for the test and deleted afterward |
+| GR-03 | **Vendor-backend content guardrails (informational)** | The same `mcp.guard` field accepts `bedrockGuardrails`, `azureContentSafety`, `openAIModeration`, `googleModelArmor`, or `webhook` instead of `regex`. Verified by inspecting CRD; not exercised live (vendor credentials out of scope). | None |
 
 ## Run
 
@@ -26,7 +28,7 @@ KUBE_CONTEXT=cluster1 ./POC-Success-Criteria-v2/Phase6-Resiliency-and-Guardrails
 |-----------|-----------|-----|
 | `agentgateway-hub` external LB | — | endpoint under test |
 | Redis (`ext-cache-enterprise-agentgateway`) pod | `agentgateway-system` | rate-limiter backing store (GR-02) |
-| `GatewayExtension` resource pointing at an ExtProc webhook | `agentgateway-system` | required for GR-01 (skipped with note if absent) |
+| `AgentgatewayPolicy/guardrails-mcp-backends` | `agentgateway-system` | applied by `scripts/05c-guardrails.sh` — required for GR-01 |
 | `RateLimitConfig` CRD | cluster | enforcement engine (GR-02) |
 
 ## GR-01 — External Guardrails Webhook (ExtProc)
@@ -104,6 +106,7 @@ The mechanism is a `RateLimitConfig` resource referencing the shared `ext-cache`
 
 ## What this phase deliberately does NOT cover
 
-- **Schema validation of MCP responses** (was v1's L7-GR-02). Default behaviour; no test needed.
-- **Graceful HTTP error translation** (was v1's L7-GR-04). Also default behaviour — when an upstream MCP server crashes, the gateway returns an MCP-formatted error. Not a sales claim worth a dedicated test.
+- **JSON-RPC envelope schema enforcement.** AgentGateway parses the envelope but does not expose a CRD field that drops malformed bodies with `-32600`. Upstream MCP servers return the standard JSON-RPC error. (Listed as an honest gap in `examples/03-guardrails.md`.)
+- **Tool `inputSchema` enforcement.** The gateway does not validate `tools/call.arguments` against the tool's declared input schema. Upstream MCP servers are responsible for this. CEL on `mcp.tool.arguments` can do shape checks for specific tools.
+- **Graceful HTTP error translation** (was v1's L7-GR-04). Default behaviour — when an upstream MCP server crashes, the gateway returns an MCP-formatted error.
 - **Circuit breakers across upstream replicas.** Provided by the gateway by default; not customer-flagged.
