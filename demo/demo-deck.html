@@ -538,11 +538,11 @@
             <rect x="10" y="10" width="90" height="44" rx="6" fill="rgba(128,35,195,0.15)" stroke="#8023C3" stroke-width="1.5"/>
             <text x="55" y="30" text-anchor="middle" font-family="Figtree" font-weight="600" font-size="10" fill="white">AI Agent</text>
             <text x="55" y="45" text-anchor="middle" font-family="DM Mono" font-size="7.5" fill="#CC85FF">LLM / MCP client</text>
-            <!-- Dex OIDC box -->
+            <!-- Keycloak OIDC box -->
             <rect x="130" y="10" width="100" height="44" rx="6" fill="rgba(32,183,243,0.1)" stroke="rgba(32,183,243,0.5)" stroke-width="1.2"/>
-            <text x="180" y="30" text-anchor="middle" font-family="Figtree" font-weight="600" font-size="10" fill="white">Dex OIDC</text>
-            <text x="180" y="45" text-anchor="middle" font-family="DM Mono" font-size="7.5" fill="#20B7F3">POST /dex/token</text>
-            <!-- Arrow agent→dex -->
+            <text x="180" y="30" text-anchor="middle" font-family="Figtree" font-weight="600" font-size="10" fill="white">Keycloak OIDC</text>
+            <text x="180" y="45" text-anchor="middle" font-family="DM Mono" font-size="7.5" fill="#20B7F3">/realms/solo-demo</text>
+            <!-- Arrow agent→keycloak -->
             <line x1="100" y1="32" x2="130" y2="32" stroke="#8023C3" stroke-width="1.4" marker-end="url(#a1)"/>
             <rect x="100" y="22" width="32" height="12" rx="3" fill="#151927"/>
             <text x="116" y="31" text-anchor="middle" font-family="DM Mono" font-size="6.5" fill="#9DA1BD">creds</text>
@@ -572,7 +572,7 @@
             <text x="243" y="118" text-anchor="middle" font-family="DM Mono" font-size="8" fill="#CC85FF">ExtAuth validates:</text>
             <text x="150" y="136" font-family="DM Mono" font-size="7.5" fill="#9DA1BD">✓  JWT signature (RS256)</text>
             <text x="150" y="152" font-family="DM Mono" font-size="7.5" fill="#9DA1BD">✓  Token expiry (exp claim)</text>
-            <text x="150" y="168" font-family="DM Mono" font-size="7.5" fill="#9DA1BD">✓  Issuer matches Dex config</text>
+            <text x="150" y="168" font-family="DM Mono" font-size="7.5" fill="#9DA1BD">✓  Issuer matches Keycloak realm</text>
             <text x="150" y="184" font-family="DM Mono" font-size="7.5" fill="#5C6178">✗  No token → HTTP 401</text>
           </svg>
         </div>
@@ -1097,13 +1097,297 @@ spec:
   </div>
 
   <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- SLIDE 11 — CONTENT GUARDRAILS                            -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div class="slide" id="slide-11-guardrails">
+    <div class="topbar">
+      <span class="wordmark">Solo.io</span>
+      <span class="topbar-tag">CONTENT GUARDRAILS</span>
+    </div>
+    <div class="slide-body">
+      <div class="overline">Schema + Guardrails</div>
+      <h2 class="section-title">PII never leaves the gateway. <span>No custom code.</span></h2>
+      <p class="section-sub">AgentGateway ships with a regex catalogue for SSNs, credit cards, phone numbers, email addresses, and more. Set one CRD field and the gateway rejects (or masks) matching payloads <strong>before</strong> the upstream MCP server is ever touched.</p>
+
+      <div class="two-col" style="margin-top:1.25rem;grid-template-columns:1fr 1.2fr;">
+        <div class="two-col-left">
+          <ul class="bullet-list">
+            <li><strong>Built-in patterns</strong> — <code>ssn</code>, <code>creditCard</code>, <code>phoneNumber</code>, <code>email</code>, <code>caSin</code>. One line each</li>
+            <li><strong>Custom regex</strong> — drop in your own patterns alongside the built-ins (AWS keys, internal IDs, prompt-injection markers)</li>
+            <li><strong>Action: reject OR mask</strong> — block the call entirely, or sanitize the match to <code>***</code> and continue</li>
+            <li><strong>Symmetric on responses</strong> — <code>guard.response</code> filters what comes back from the tool, not just what goes in</li>
+            <li><strong>Vendor backends</strong> — Bedrock Guardrails, Azure Content Safety, OpenAI Moderation, Google Model Armor, or your own webhook. Same policy shape</li>
+            <li><strong>Native config, not ExtProc</strong> — the regex engine lives in the gateway binary. Zero extra services to run</li>
+          </ul>
+        </div>
+        <div class="two-col-right">
+          <div class="card" style="padding:1.1rem 1.2rem;">
+            <span class="mono-tag">POLICY</span>
+            <pre style="font-family:'DM Mono',monospace;font-size:0.72rem;color:#B5B8CD;line-height:1.55;margin-top:0.5rem;overflow-x:auto;">backend:
+  mcp:
+    guard:
+      request:
+        regex:
+          action: reject
+          rules:
+          - builtin: ssn
+          - builtin: creditCard
+          - pattern: '\bAKIA[0-9A-Z]{16}\b'
+        rejection:
+          status: 403</pre>
+          </div>
+          <div class="card blue" style="padding:0.9rem 1.1rem;margin-top:0.75rem;">
+            <span class="mono-tag blue">DEMO RESULT</span>
+            <div style="font-family:'DM Mono',monospace;font-size:0.78rem;color:#B5B8CD;line-height:1.9;margin-top:0.4rem;">
+              <div><span style="color:#1FEEB3;">clean call</span>          → HTTP 200</div>
+              <div><span style="color:#FFA785;">SSN 123-45-6789</span>      → HTTP 403</div>
+              <div><span style="color:#FFA785;">card 4111-…-1111</span>     → HTTP 403</div>
+            </div>
+          </div>
+          <div class="card" style="padding:0.9rem;margin-top:0.5rem;">
+            <span class="mono-tag">KEY MESSAGE</span>
+            <p style="font-size:0.82rem;color:#B5B8CD;line-height:1.55;margin-top:0.3rem;">
+              No custom ExtProc service. No sidecar. The PII regex catalogue is a CRD field that you turn on per backend.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- SLIDE 12 — OAUTH 2.1 HARDENING                           -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div class="slide" id="slide-12-oauth21">
+    <div class="topbar">
+      <span class="wordmark">Solo.io</span>
+      <span class="topbar-tag">OAUTH 2.1</span>
+    </div>
+    <div class="slide-body">
+      <div class="overline">Security Hardening</div>
+      <h2 class="section-title">OAuth 2.1, modernized. <span>Three flows, one gateway.</span></h2>
+      <p class="section-sub">PKCE on browser flows, client-credentials for service-to-service, RFC 9728 protected-resource-metadata for client auto-discovery. The agent never has to be told where the auth server is.</p>
+
+      <div class="two-col" style="margin-top:1.25rem;grid-template-columns:1fr 1.2fr;">
+        <div class="two-col-left">
+          <ul class="bullet-list">
+            <li><strong>PKCE on auth-code</strong> — Keycloak enforces <code>code_challenge_method=S256</code> when present. Browser flows are immune to authorization-code interception</li>
+            <li><strong>Client-credentials grant — LIVE</strong> — <code>mcp-service</code> Keycloak client issues a real m2m JWT (Dex v2.42 couldn't; Keycloak does)</li>
+            <li><strong>RFC 9728 metadata</strong> — field configured on the policy. AGW v2.3.3 does not yet serve <code>/.well-known/oauth-protected-resource</code> at the LB; tracking for a future release</li>
+            <li><strong>Per-tenant audiences</strong> — each Keycloak client issues a JWT with its own <code>aud</code>. The gateway can pin a backend to one audience</li>
+            <li><strong>Backwards-compatible</strong> — password grant still works for <code>demo/send-traffic.sh</code>; production hardening switches users to PKCE + client-creds</li>
+          </ul>
+        </div>
+        <div class="two-col-right">
+          <div class="card" style="padding:1rem 1.1rem;">
+            <span class="mono-tag">FLOW A — PKCE BROWSER</span>
+            <div style="font-family:'DM Mono',monospace;font-size:0.72rem;color:#B5B8CD;line-height:1.85;margin-top:0.4rem;">
+              <div>1. Agent gens code_verifier + S256 challenge</div>
+              <div>2. <span style="color:#CC85FF;">/realms/.../auth?...&code_challenge=...</span></div>
+              <div>3. User logs in, code returned</div>
+              <div>4. <span style="color:#CC85FF;">/realms/.../token?code=...&code_verifier=...</span></div>
+              <div>5. <span style="color:#1FEEB3;">JWT</span></div>
+            </div>
+          </div>
+          <div class="card blue" style="padding:1rem 1.1rem;margin-top:0.6rem;">
+            <span class="mono-tag blue">FLOW B — CLIENT-CREDENTIALS</span>
+            <div style="font-family:'DM Mono',monospace;font-size:0.72rem;color:#B5B8CD;line-height:1.85;margin-top:0.4rem;">
+              <div><span style="color:#20B7F3;">POST /realms/.../token</span></div>
+              <div>&nbsp;&nbsp;grant_type=client_credentials</div>
+              <div>&nbsp;&nbsp;client_id=mcp-service</div>
+              <div>&nbsp;&nbsp;client_secret=&lt;...&gt;</div>
+              <div>→ <span style="color:#1FEEB3;">JWT</span></div>
+            </div>
+          </div>
+          <div class="card green" style="padding:0.9rem 1.1rem;margin-top:0.6rem;">
+            <span class="mono-tag green">FLOW C — RFC 9728 DISCOVERY</span>
+            <div style="font-family:'DM Mono',monospace;font-size:0.72rem;color:#B5B8CD;line-height:1.85;margin-top:0.4rem;">
+              <div><span style="color:#1FEEB3;">GET /.well-known/oauth-protected-resource</span></div>
+              <div>→ JSON metadata (issuer, scopes, audiences)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- SLIDE 13 — OBSERVABILITY + RESILIENCE                    -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div class="slide" id="slide-13-obs">
+    <div class="topbar">
+      <span class="wordmark">Solo.io</span>
+      <span class="topbar-tag">OBSERVABILITY + RESILIENCE</span>
+    </div>
+    <div class="slide-body">
+      <div class="overline">MCP-Aware Telemetry</div>
+      <h2 class="section-title">Which tool, which agent, which session. <span>End to end.</span></h2>
+      <p class="section-sub">Every MCP call emits a structured log line with the JSON-RPC method, tool name, session ID, and trace ID. A single trace spans the AGW-to-AGW chain. Scaling a backend pod to zero does not interrupt the agent.</p>
+
+      <div class="two-col" style="margin-top:1.25rem;grid-template-columns:1fr 1.3fr;">
+        <div class="two-col-left">
+          <ul class="bullet-list">
+            <li><strong>MCP-aware access logs</strong> — every line carries <code>mcp.method.name</code>, <code>mcp.session.id</code>, <code>mcp.tool.name</code>, <code>trace.id</code></li>
+            <li><strong>Distributed tracing across the chain</strong> — one trace ID flows from cluster1 AGW → cluster2 AGW → upstream tool. Visible in the AGW Enterprise UI</li>
+            <li><strong>OTel → ClickHouse → AGW UI</strong> — all three already wired by <code>04a-agw-management-ui.sh</code>; cluster2 ships back via the telemetry gateway</li>
+            <li><strong>Failover demo</strong> — scale cluster1's MCP server to 0 replicas; <code>/mcp/peer</code> keeps returning 200 because the chain routes through cluster2's AGW</li>
+            <li><strong>FailOpen at the backend</strong> — direct routes that have lost their upstream return a structured MCP error instead of hard-failing the call</li>
+          </ul>
+        </div>
+        <div class="two-col-right">
+          <div class="card" style="padding:1rem 1.1rem;">
+            <span class="mono-tag">ACCESS LOG SAMPLE</span>
+            <pre style="font-family:'DM Mono',monospace;font-size:0.7rem;color:#B5B8CD;line-height:1.55;margin-top:0.5rem;overflow-x:auto;">{
+  "gateway": "agentgateway-hub",
+  "route":   "mcp-route-peer",
+  "protocol": "mcp",
+  "mcp.method.name": "tools/call",
+  "mcp.tool.name":   "echo",
+  "mcp.session.id":  "eyJ0Ijoi...",
+  "trace.id": "4176dfd9...",
+  "http.status": 200,
+  "duration":   "5ms"
+}</pre>
+          </div>
+          <div class="card blue" style="padding:1rem 1.1rem;margin-top:0.6rem;">
+            <span class="mono-tag blue">FAILOVER WINDOW</span>
+            <div style="font-family:'DM Mono',monospace;font-size:0.75rem;color:#B5B8CD;line-height:1.95;margin-top:0.4rem;">
+              <div>baseline 5×&nbsp;&nbsp;→ <span style="color:#1FEEB3;">5×200</span></div>
+              <div>scale c1 mcp → 0</div>
+              <div>failover 5×&nbsp;→ <span style="color:#1FEEB3;">5×200</span> (via c2 AGW)</div>
+              <div>scale c1 mcp → 1</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- SLIDE 14 — STRICT IDENTITY-BOUND PATH SCOPING            -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div class="slide" id="slide-14-rbac-strict">
+    <div class="topbar">
+      <span class="wordmark">Solo.io</span>
+      <span class="topbar-tag">STRICT RBAC</span>
+    </div>
+    <div class="slide-body">
+      <div class="overline">Identity-Bound Paths</div>
+      <h2 class="section-title">Each tenant only uses its own URL. <span>The gateway enforces it.</span></h2>
+      <p class="section-sub">Multi-tenancy (slide 10) used paths as a convention. Strict RBAC turns it into a rule: a tenant-a JWT is rejected at <code>/mcp/tenant-b</code> with HTTP 401. Same gateway, different audiences, hard enforcement.</p>
+
+      <div class="two-col" style="margin-top:1.25rem;grid-template-columns:1fr 1.2fr;">
+        <div class="two-col-left">
+          <ul class="bullet-list">
+            <li><strong>Per-tenant OAuth client</strong> — <code>tenant-a-client</code>, <code>tenant-b-client</code>. Each issues JWTs with its own <code>aud</code></li>
+            <li><strong>Audience-restricted backend</strong> — <code>AgentgatewayPolicy.backend.mcp.authentication.audiences</code> declares the allowed audience. Wrong audience → 401 at the gateway</li>
+            <li><strong>Tool RBAC stays</strong> — combined with the per-path tool allowlists from slide 10, each tenant gets identity-checked AND tool-filtered</li>
+            <li><strong>No OPA</strong> — pure CRD config. (OPA stays available for richer per-claim policies)</li>
+            <li><strong>Adding a tenant</strong> — one Dex client + one audience-restricted policy. Same five-resource pattern as slide 10</li>
+          </ul>
+        </div>
+        <div class="two-col-right">
+          <div class="card" style="padding:1rem 1.1rem;">
+            <span class="mono-tag">CROSS-TENANT MATRIX</span>
+            <table style="width:100%;font-family:'DM Mono',monospace;font-size:0.78rem;color:#B5B8CD;border-collapse:collapse;margin-top:0.5rem;">
+              <tr style="border-bottom:1px solid rgba(92,97,120,0.3);">
+                <td style="padding:0.4rem 0;color:#5C6178;">caller \ path</td>
+                <td style="padding:0.4rem 0;color:#CC85FF;">/mcp/tenant-a</td>
+                <td style="padding:0.4rem 0;color:#20B7F3;">/mcp/tenant-b</td>
+              </tr>
+              <tr>
+                <td style="padding:0.4rem 0;color:#CC85FF;">tenant-a JWT</td>
+                <td style="padding:0.4rem 0;color:#1FEEB3;">200 ✓</td>
+                <td style="padding:0.4rem 0;color:#FFA785;">401 ✗</td>
+              </tr>
+              <tr>
+                <td style="padding:0.4rem 0;color:#20B7F3;">tenant-b JWT</td>
+                <td style="padding:0.4rem 0;color:#FFA785;">401 ✗</td>
+                <td style="padding:0.4rem 0;color:#1FEEB3;">200 ✓</td>
+              </tr>
+            </table>
+          </div>
+          <div class="card blue" style="padding:1rem 1.1rem;margin-top:0.6rem;">
+            <span class="mono-tag blue">POLICY (per tenant)</span>
+            <pre style="font-family:'DM Mono',monospace;font-size:0.7rem;color:#B5B8CD;line-height:1.55;margin-top:0.4rem;overflow-x:auto;">backend:
+  mcp:
+    authentication:
+      issuer:    "http://&lt;lb&gt;/dex"
+      audiences: ["tenant-a-client"]</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- SLIDE 15 — UNIFIED CONSOLE                               -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div class="slide" id="slide-15-console">
+    <div class="topbar">
+      <span class="wordmark">Solo.io</span>
+      <span class="topbar-tag">UNIFIED CONSOLE</span>
+    </div>
+    <div class="slide-body">
+      <div class="overline">Single Control Plane</div>
+      <h2 class="section-title">One URL. <span>Every UI. Behind the same OIDC.</span></h2>
+      <p class="section-sub">A static console page served by the gateway itself at <code>/console</code>. Cards link to AgentGateway Enterprise, AgentRegistry, Gloo Mesh, and MCP Inspector. The operator gets one bookmark for the entire platform.</p>
+
+      <div class="two-col" style="margin-top:1.25rem;grid-template-columns:1fr 1.4fr;">
+        <div class="two-col-left">
+          <ul class="bullet-list">
+            <li><strong>Single OIDC login</strong> — hitting <code>/console</code> without a session redirects to Dex, same as <code>/mcp</code></li>
+            <li><strong>Served by the platform</strong> — Nginx pod + AGW HTTPRoute. No external hosting, no per-laptop static file</li>
+            <li><strong>Extensible</strong> — add a card by editing one HTML block in the configmap. Add a route to embed a UI inline later</li>
+            <li><strong>Honest about the dependency</strong> — card links point at the existing port-forwards from <code>demo/portforward.sh</code>. Production would route each UI through the LB directly</li>
+            <li><strong>Adds 5 resources</strong> — ConfigMap, Deployment, Service, AgentgatewayBackend, HTTPRoute. Same pattern as every other backend in the demo</li>
+          </ul>
+        </div>
+        <div class="two-col-right">
+          <div class="card" style="padding:1.1rem 1.2rem;">
+            <span class="mono-tag">/console/ — CARD GRID</span>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;margin-top:0.6rem;">
+              <div style="background:#151927;border:1px solid rgba(128,35,195,0.4);border-radius:6px;padding:0.6rem;">
+                <div style="font-size:0.95rem;">🛡️</div>
+                <div style="font-weight:600;font-size:0.78rem;color:#fff;">AGW Enterprise</div>
+                <div style="font-family:'DM Mono',monospace;font-size:0.62rem;color:#CC85FF;">localhost:4000</div>
+              </div>
+              <div style="background:#151927;border:1px solid rgba(31,238,179,0.4);border-radius:6px;padding:0.6rem;">
+                <div style="font-size:0.95rem;">📚</div>
+                <div style="font-weight:600;font-size:0.78rem;color:#fff;">AgentRegistry</div>
+                <div style="font-family:'DM Mono',monospace;font-size:0.62rem;color:#1FEEB3;">localhost:8080</div>
+              </div>
+              <div style="background:#151927;border:1px solid rgba(32,183,243,0.4);border-radius:6px;padding:0.6rem;">
+                <div style="font-size:0.95rem;">🌐</div>
+                <div style="font-weight:600;font-size:0.78rem;color:#fff;">Gloo Mesh</div>
+                <div style="font-family:'DM Mono',monospace;font-size:0.62rem;color:#20B7F3;">localhost:8090</div>
+              </div>
+              <div style="background:#151927;border:1px solid rgba(255,167,133,0.4);border-radius:6px;padding:0.6rem;">
+                <div style="font-size:0.95rem;">🔍</div>
+                <div style="font-weight:600;font-size:0.78rem;color:#fff;">MCP Inspector</div>
+                <div style="font-family:'DM Mono',monospace;font-size:0.62rem;color:#FFA785;">localhost:6274</div>
+              </div>
+            </div>
+          </div>
+          <div class="card" style="padding:0.9rem;margin-top:0.6rem;">
+            <span class="mono-tag">KEY MESSAGE</span>
+            <p style="font-size:0.82rem;color:#B5B8CD;line-height:1.55;margin-top:0.3rem;">
+              The unified console is the platform's own front door. One login, one bookmark, four UIs.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
 </div><!-- /deck -->
 
 <!-- ── Navigation ── -->
 <nav class="slide-nav" id="slideNav">
   <button id="prevBtn" onclick="changeSlide(-1)" disabled>&#8592;</button>
   <div style="display:flex;gap:0.5rem;align-items:center;" id="dotContainer"></div>
-  <span class="slide-counter" id="counter">1 / 10</span>
+  <span class="slide-counter" id="counter">1 / 15</span>
   <button id="nextBtn" onclick="changeSlide(1)">&#8594;</button>
 </nav>
 

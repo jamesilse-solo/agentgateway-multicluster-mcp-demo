@@ -99,7 +99,7 @@ if [[ "${NO_AUTH}" == "false" ]]; then
   # Reuse an existing Dex port-forward if one is running (e.g. from
   # ./demo/portforward.sh). Otherwise start a temporary one for this run.
   PF_DEX=""
-  if curl -s --max-time 2 "http://localhost:5556/dex/.well-known/openid-configuration" &>/dev/null; then
+  if curl -s --max-time 2 "http://localhost:5556/realms/solo-demo/.well-known/openid-configuration" &>/dev/null; then
     info "  Dex already reachable on :5556 — reusing existing port-forward."
   else
     info "  Port-forwarding Dex locally on :5556..."
@@ -107,7 +107,7 @@ if [[ "${NO_AUTH}" == "false" ]]; then
     PF_DEX=$!
     trap 'kill "${PF_DEX}" 2>/dev/null || true' EXIT
     for i in $(seq 1 12); do
-      if curl -s --max-time 2 "http://localhost:5556/dex/.well-known/openid-configuration" &>/dev/null; then
+      if curl -s --max-time 2 "http://localhost:5556/realms/solo-demo/.well-known/openid-configuration" &>/dev/null; then
         break
       fi
       [[ ${i} -eq 12 ]] && { fail "Dex not reachable on :5556 after 12s"; exit 1; }
@@ -115,10 +115,10 @@ if [[ "${NO_AUTH}" == "false" ]]; then
     done
   fi
 
-  cmd "POST http://localhost:5556/dex/token  grant_type=password  user=demo@example.com"
-  TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
+  cmd "POST http://localhost:5556/realms/solo-demo/protocol/openid-connect/token  grant_type=password  user=demo"
+  TOKEN=$(curl -s -X POST http://localhost:5556/realms/solo-demo/protocol/openid-connect/token \
     -H 'Content-Type: application/x-www-form-urlencoded' \
-    -d 'grant_type=password&username=demo@example.com&password=demo-pass' \
+    -d 'grant_type=password&username=demo&password=demo-pass' \
     -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
     | python3 -c "import sys,json; t=json.load(sys.stdin); print(t.get('access_token',''))" 2>/dev/null || echo "")
 

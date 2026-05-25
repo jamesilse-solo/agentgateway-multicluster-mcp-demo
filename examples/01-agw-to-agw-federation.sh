@@ -219,7 +219,7 @@ fi
 # Step 5 — Acquire a JWT and call the federated path
 #
 # Dex (the demo OIDC provider) is reachable through the AGW hub LB at
-# /dex/token. We do the standard OAuth "password grant" to get a Bearer
+# /realms/solo-demo/protocol/openid-connect/token. We do the standard OAuth "password grant" to get a Bearer
 # token, then POST an MCP 'initialize' to /mcp/peer. The response is
 # served by Cluster 2's AGW — but it arrives on Cluster 1's LB just like
 # any other MCP response.
@@ -231,9 +231,9 @@ AGW_LB=$(${KC1} -n "${AGW_NAMESPACE}" get gateway agentgateway-hub \
 note "AGW Hub LB: ${AGW_LB}"
 
 note "Acquiring a JWT from Dex (via the AGW LB, no port-forward needed)..."
-TOKEN=$(curl -s -X POST "http://${AGW_LB}/dex/token" \
+TOKEN=$(curl -s -X POST "http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token" \
   -d 'grant_type=password' \
-  -d 'username=demo@example.com' \
+  -d 'username=demo' \
   -d 'password=demo-pass' \
   -d 'client_id=agw-client' \
   -d 'client_secret=agw-client-secret' \
