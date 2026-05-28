@@ -267,119 +267,6 @@ run "${KC1} -n ${AGW_NS} rollout status deploy/mcp-server-everything --timeout=6
 echo ""
 
 ###############################################################################
-# SECTION 4 — AGENTREGISTRY CATALOG
-###############################################################################
-banner "Act 4 — AgentRegistry Enterprise: MCP Catalog"
-
-AREG_POD=$(${KC1} -n agentregistry get pod -l app.kubernetes.io/name=agentregistry-enterprise \
-  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-
-if [[ -z "${AREG_POD}" ]]; then
-  warn "AgentRegistry Enterprise is not running (run 04-areg-enterprise.sh first)"
-  warn "Skipping this section."
-  SKIP_AREG=true
-else
-  SKIP_AREG=false
-  ok "AgentRegistry pod: ${AREG_POD}"
-  echo ""
-
-  info "AgentRegistry Enterprise stores a catalog of MCP servers."
-  info "Seeded with 363 community MCP server definitions on startup."
-  info "AgentGateway discovers and proxies backends registered here."
-  echo ""
-
-  step "Port-forwarding AgentRegistry (UI on 8080, MCP on 31313)"
-  pkill -f "port-forward.*agentregistry.*8080" 2>/dev/null || true
-  pkill -f "port-forward.*agentregistry.*31313" 2>/dev/null || true
-  sleep 1
-  # Helm chart names the service agentregistry-agentregistry-enterprise
-  AREG_SVC="agentregistry-agentregistry-enterprise"
-  ${KC1} -n agentregistry port-forward "svc/${AREG_SVC}" 8080:8080 &
-  PF_AREG_UI_PID=$!
-  ${KC1} -n agentregistry port-forward "svc/${AREG_SVC}" 31313:31313 &
-  PF_AREG_MCP_PID=$!
-  PF_AREG_PID="${PF_AREG_UI_PID}"
-  sleep 3
-
-  ok "AgentRegistry UI open at: http://localhost:8080"
-  ok "AgentRegistry MCP endpoint: http://localhost:31313/mcp"
-  echo ""
-
-  step "Querying AgentRegistry catalog via its MCP endpoint (port 31313)"
-  info "  POST http://localhost:31313/mcp   method: initialize"
-  info "  Auth: Bearer token from Keycloak (AREG enforces OIDC — same demo user)"
-
-  AREG_INIT_TOKEN="${TOKEN:-}"
-  if [[ -z "${AREG_INIT_TOKEN}" ]]; then
-    # Re-acquire token if Act 2 was skipped or token expired
-    AREG_INIT_TOKEN=$(curl -s -X POST http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token \
-      -H 'Content-Type: application/x-www-form-urlencoded' \
-      -d 'grant_type=password&username=demo@example.com&password=demo-pass' \
-      -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
-      | python3 -c "import sys,json; t=json.load(sys.stdin); print(t.get('access_token',''))" 2>/dev/null || echo "")
-  fi
-
-  AREG_INIT=$(curl -si -X POST "http://localhost:31313/mcp" \
-    -H "Authorization: Bearer ${AREG_INIT_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -H "Accept: application/json, text/event-stream" \
-    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"mcp-demo","version":"1.0"}}}' \
-    2>/dev/null)
-
-  AREG_SESSION=$(echo "${AREG_INIT}" | grep -i "^mcp-session-id:" | awk '{print $2}' | tr -d '\r')
-  AREG_STATUS=$(echo "${AREG_INIT}" | grep "^HTTP/" | awk '{print $2}')
-
-  if [[ -n "${AREG_SESSION}" ]]; then
-    ok "HTTP ${AREG_STATUS} — AgentRegistry MCP session: ${AREG_SESSION}"
-    echo ""
-
-    step "Listing AgentRegistry MCP tools"
-    AREG_TOOLS=$(curl -s -X POST "http://localhost:31313/mcp" \
-      -H "Authorization: Bearer ${AREG_INIT_TOKEN}" \
-      -H "Mcp-Session-Id: ${AREG_SESSION}" \
-      -H "Content-Type: application/json" \
-      -H "Accept: application/json, text/event-stream" \
-      -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
-      2>/dev/null)
-
-    AREG_TOOL_NAMES=$(echo "${AREG_TOOLS}" | grep -o '"name":"[^"]*"' | cut -d'"' -f4 | head -8)
-    if [[ -n "${AREG_TOOL_NAMES}" ]]; then
-      ok "AgentRegistry MCP tools:"
-      while IFS= read -r tool; do
-        echo "      - ${tool}"
-      done <<< "${AREG_TOOL_NAMES}"
-    else
-      warn "No tools returned — check AREG RBAC (roleMapper CEL) and token claims"
-    fi
-  else
-    warn "HTTP ${AREG_STATUS} — could not establish AREG MCP session"
-    info "Verify: kubectl -n agentregistry logs deploy/agentregistry-agentregistry-enterprise | tail -20"
-  fi
-  echo ""
-
-  pause
-
-  step "AgentRegistry accessible via AgentGateway hub at /mcp/registry"
-  info "  Any MCP client that authenticates with Keycloak can reach the catalog"
-  info "  through the same hub gateway — no separate auth config needed."
-
-  if [[ -n "${TOKEN:-}" ]]; then
-    AREG_AGW_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
-      -H "Authorization: Bearer ${TOKEN}" \
-      "http://${AGW_LB}/mcp/registry" 2>/dev/null)
-    echo "   GET http://${AGW_LB}/mcp/registry → HTTP ${AREG_AGW_CODE}"
-    if [[ "${AREG_AGW_CODE}" == "200" || "${AREG_AGW_CODE}" == "400" ]]; then
-      ok "AgentRegistry reachable through AGW hub (auth enforced by Keycloak ExtAuth)"
-    else
-      warn "HTTP ${AREG_AGW_CODE} — check areg-mcp-route HTTPRoute status"
-    fi
-  fi
-  echo ""
-fi
-
-pause
-
-###############################################################################
 # SUMMARY
 ###############################################################################
 banner "Demo Summary"
@@ -396,12 +283,7 @@ echo "      - /mcp/remote always routes to cluster2 via .mesh.internal"
 echo "      - Failover: scale cluster1 to 0 → cluster2 serves seamlessly"
 echo "      - HBONE tunnel over port 15008, no sidecars, no VPN"
 echo ""
-echo "   3. AgentRegistry Enterprise — MCP server catalog"
-echo "      - 363 community MCP servers seeded on startup"
-echo "      - Catalog accessible via AGW hub at /mcp/registry (auth enforced)"
-echo "      - Solo differentiator: registry-driven backend discovery"
-echo ""
-echo "   4. AgentGateway as the unified AI traffic control plane"
+echo "   3. AgentGateway as the unified AI traffic control plane"
 echo "      - Single hub controls auth, routing, and discovery for both clusters"
 echo "      - Waypoint-based architecture: only Solo, not upstream Istio"
 echo ""
@@ -409,7 +291,6 @@ echo ""
 info "Endpoints:"
 echo "   MCP (local cluster1):   http://${AGW_LB}/mcp"
 echo "   MCP (remote cluster2):  http://${AGW_LB}/mcp/remote"
-echo "   AgentRegistry catalog:  http://${AGW_LB}/mcp/registry"
 echo "   Keycloak realm:         http://${AGW_LB}/realms/solo-demo"
 echo ""
 info "Demo credentials:"
@@ -419,10 +300,6 @@ echo ""
 
 # Cleanup port-forwards
 kill "${PF_DEX_PID}" 2>/dev/null || true
-if [[ "${SKIP_AREG:-true}" == "false" ]]; then
-  kill "${PF_AREG_UI_PID}" 2>/dev/null || true
-  kill "${PF_AREG_MCP_PID}" 2>/dev/null || true
-fi
 
 echo -e "${GREEN}${BOLD}Demo complete.${RESET}"
 echo ""

@@ -105,12 +105,12 @@ This test demonstrates the principle by allowing the agent to reach one destinat
 
 1. **Baseline**: from `netshoot`, curl two destinations:
    - `mcp-server-everything` — the intended tool target (no policy → allowed)
-   - `agentregistry-agentregistry-enterprise` (in `agentregistry` namespace) — a representative "lateral" target
-2. Apply an `AuthorizationPolicy` in `agentregistry` with `action: DENY`, selector for the registry, source `namespaces: ["debug"]`.
+   - `keycloak` (in `keycloak` namespace) — a representative "lateral" target (the platform's own IdP)
+2. Apply an `AuthorizationPolicy` in `keycloak` with `action: DENY`, selector for the Keycloak pod, source `namespaces: ["debug"]`.
 3. Wait ~4 seconds for XDS propagation.
 4. Re-run both curls. Expect:
    - mcp-server-everything: same HTTP code as before (still allowed — no policy applied).
-   - agentregistry: HTTP `000` (newly blocked).
+   - keycloak: HTTP `000` (newly blocked).
 5. Delete the `AuthorizationPolicy`.
 
 ### What success looks like

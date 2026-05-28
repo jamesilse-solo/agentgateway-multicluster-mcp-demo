@@ -212,7 +212,6 @@ footer {{ color: var(--muted); font-size: 0.78rem; font-family: 'DM Mono', monos
   <h2>🧭 Other platform UIs <span class="badge">port-forwarded</span></h2>
   <div class="linkgrid">
     <a href="http://localhost:4000" target="_blank"><div class="name">🛡️ AgentGateway Enterprise</div><div class="port">localhost:4000</div></a>
-    <a href="http://localhost:8080" target="_blank"><div class="name">📚 AgentRegistry</div><div class="port">localhost:8080</div></a>
     <a href="http://localhost:8090" target="_blank"><div class="name">🌐 Gloo Mesh</div><div class="port">localhost:8090</div></a>
     <a href="http://localhost:6274" target="_blank"><div class="name">🔍 MCP Inspector</div><div class="port">localhost:6274</div></a>
     <a href="http://localhost:8081" target="_blank"><div class="name">🔐 Keycloak Admin</div><div class="port">localhost:8081</div></a>

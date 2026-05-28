@@ -67,8 +67,6 @@ products:
     namespace: ${AGW_NAMESPACE}
   mesh:
     enabled: false
-  agentregistry:
-    enabled: false
 clickhouse:
   enabled: true
   resources:

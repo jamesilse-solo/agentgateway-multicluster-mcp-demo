@@ -1,9 +1,9 @@
-# Solo.io AgentGateway — 42-Minute Demo Script
+# Solo.io AgentGateway — 37-Minute Demo Script
 
 **Audience:** Enterprise architects  
 **Presenter:** SE team  
-**Duration:** ~42 minutes    
-**Core messages:** (1) Centralized MCP gateway + registry, (2) Auth enforcement at the platform layer, (3) Bidirectional cross-cluster federation
+**Duration:** ~37 minutes    
+**Core messages:** (1) Centralized MCP gateway, (2) Auth enforcement at the platform layer, (3) Bidirectional cross-cluster federation
 
 ---
 
@@ -14,40 +14,36 @@ Run these before the call starts. Everything should be green before screen-share
 ```bash
 # 1. Start all port-forwards (leave this running in a dedicated terminal)
 KUBE_CONTEXT=cluster1 ./demo/portforward.sh
-# → All five sections should show ✓ (AgentRegistry / AGW UI / Gloo Mesh / Keycloak / MCP LBs)
+# → All four sections should show ✓ (AGW UI / Gloo Mesh / Keycloak / MCP LBs)
 
-# 2. Verify AgentRegistry UI loads and shows 3 servers
-open http://localhost:8080
-# → Log in with any credentials (demo auth). Navigate to Servers — confirm 3 entries.
-
-# 3. Verify AgentGateway Enterprise UI loads
+# 2. Verify AgentGateway Enterprise UI loads
 open http://localhost:4000
 # → Should show Routes, Backends, Policies in the left nav.
 
-# 4. Verify Gloo Mesh UI loads
+# 3. Verify Gloo Mesh UI loads
 open http://localhost:8090
 # → Should show cluster topology with cluster1 and cluster2 registered.
 
-# 5. Confirm both AGW LBs resolve
+# 4. Confirm both AGW LBs resolve
 kubectl --context cluster1 -n agentgateway-system get svc agentgateway-hub
 kubectl --context cluster2 -n agentgateway-system get svc agentgateway-spoke
 # → Copy both EXTERNAL-IP / hostnames for reference
 
-# 6. Verify cluster1 → cluster2 MCP works
+# 5. Verify cluster1 → cluster2 MCP works
 ./demo/send-traffic.sh --remote
 # → Should complete with tool list and echo response from cluster2
 
-# 7. Verify cluster2 → cluster1 MCP works
+# 6. Verify cluster2 → cluster1 MCP works
 C2_LB=$(kubectl --context cluster2 -n agentgateway-system \
   get svc agentgateway-spoke -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 AGW_LB="${C2_LB}" ./demo/send-traffic.sh --remote
 # → Tool list and echo response from cluster1 via cluster2's gateway
 
-# 8. Open demo-deck.html in browser, navigate to slide 1
+# 7. Open demo-deck.html in browser, navigate to slide 1
 open ./demo/demo-deck.html
 ```
 
-Have four browser tabs open: AgentRegistry UI (8080), AgentGateway Enterprise UI (4000), Gloo Mesh UI (8090), demo deck.  
+Have three browser tabs open: AgentGateway Enterprise UI (4000), Gloo Mesh UI (8090), demo deck.  
 Have two terminal tabs ready: portforward.sh (running), demo traffic commands.
 
 ---
@@ -59,56 +55,21 @@ Have two terminal tabs ready: portforward.sh (running), demo traffic commands.
 
 **Slide 1 — Title**
 
-> "What we've deployed here is a complete federated AI agent infrastructure across your two EKS clusters. Today we'll show two things: how you centralize and govern all MCP tool traffic through a single gateway and registry — and how that gateway transparently federates calls across clusters in both directions, so agents never need to know or care which cluster a tool lives on."
+> "What we've deployed here is a complete federated AI agent infrastructure across your two EKS clusters. Today we'll show two things: how you centralize and govern all MCP tool traffic through a single gateway — and how that gateway transparently federates calls across clusters in both directions, so agents never need to know or care which cluster a tool lives on."
 
 **Slide 2 — Architecture**
 
-> "Two EKS clusters. Each runs AgentGateway Enterprise — the single policy enforcement point for every MCP call. Cluster 1 also runs AgentRegistry, which is your MCP service catalog."
-
-> "AgentRegistry is what agents use to discover tools by name rather than by hardcoded URL. A call to `/v0/servers?search=com.amazonaws` returns everything the agent needs to connect."
+> "Two EKS clusters. Each runs AgentGateway Enterprise — the single policy enforcement point for every MCP call."
 
 > "The two clusters are connected over HBONE mutual TLS — that's the blue line at the bottom, handled by the ambient mesh. An agent on cluster 1 can reach tools on cluster 2, and vice versa. The routing is path-based and completely transparent to the agent. We'll demonstrate both directions."
 
 **Transition:**
 
-> "Let's start with the registry."
+> "Let's run traffic through it."
 
 ---
 
-## Segment 1 — AgentRegistry (5 min)
-
-**Show:** Browser tab with `http://localhost:8080`  
-**Goal:** Show the catalog, walk through an entry, demonstrate the discovery workflow.
-
-**Open the Servers tab**
-
-> "This is the AgentRegistry Enterprise UI. Three servers are already registered — the two internal MCP servers on cluster 1 and cluster 2, plus the Solo.io documentation search server."
-
-**Click on `com.amazonaws/mcp-everything-local`**
-
-> "The naming follows reverse-domain convention. `com.amazonaws` maps to amazonaws.com — which is where the AgentGateway load balancer lives. The registry validates that the URL you register matches the namespace, so teams can't squatting on each other's namespace."
-
-> "The entry has the URL, a JSON schema reference, version, and title. Any agent does a GET to `/v0/servers?search=com.amazonaws` and gets back everything it needs to open an MCP session — no hardcoded URLs, no out-of-band configuration."
-
-**Register a new server live**
-
-```bash
-curl -s -X POST http://localhost:8080/v0/servers \
-  -H "Content-Type: application/json" \
-  -d '{
-    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
-    "name": "com.amazonaws/mcp-demo-live",
-    "title": "Live Demo Server",
-    "version": "1.0.0",
-    "remotes": [{"type": "streamable-http", "url": "http://'"${AGW_LB:-agw-lb}"'/mcp"}]
-  }' | python3 -m json.tool
-```
-
-> "One API call. No restart, no config change. In production this goes into your CI/CD pipeline — a new tool server registers itself at deploy time."
-
----
-
-## Segment 2 — Agent Traffic + Auth Flow (6 min)
+## Segment 1 — Agent Traffic + Auth Flow (6 min)
 
 **Show:** Slide 3 (Auth Flow), then terminal running `send-traffic.sh`  
 **Goal:** Show the auth model on the slide, then demonstrate it live.
@@ -137,7 +98,7 @@ KUBE_CONTEXT=cluster1 ./demo/send-traffic.sh
 
 ---
 
-## Segment 3 — AgentGateway Enterprise UI — Governance (6 min)
+## Segment 2 — AgentGateway Enterprise UI — Governance (6 min)
 
 **Show:** Browser tab with `http://localhost:4000`  
 **Goal:** Show the gateway control-plane — routes, backends, auth policy, traffic logs.
@@ -146,11 +107,11 @@ KUBE_CONTEXT=cluster1 ./demo/send-traffic.sh
 
 Navigate to Routes:
 
-> "Here are the three routes configured on this gateway. `/mcp` routes to the local MCP server on cluster 1. `/mcp/remote` routes cross-cluster to cluster 2 via the HBONE tunnel. `/mcp/registry` routes to AgentRegistry — that's how agents discover available tools. Every one of these is configured as a Kubernetes HTTPRoute object. Infrastructure as code, version-controlled, reviewed."
+> "Here are the routes configured on this gateway. `/mcp` routes to the local MCP server on cluster 1. `/mcp/remote` routes cross-cluster to cluster 2 via the HBONE tunnel. Every one of these is configured as a Kubernetes HTTPRoute object. Infrastructure as code, version-controlled, reviewed."
 
 Navigate to Backends:
 
-> "Backends are the targets behind those routes — the actual service endpoints. Each backend has health status. You can see the AgentRegistry backend, both MCP server backends, and the cross-cluster backend for cluster 2."
+> "Backends are the targets behind those routes — the actual service endpoints. Each backend has health status. You can see both MCP server backends and the cross-cluster backend for cluster 2."
 
 Navigate to Policies / Auth:
 
@@ -162,7 +123,7 @@ Navigate to Traffic / Logs:
 
 ---
 
-## Segment 4 — Gloo Mesh Enterprise UI — Multi-Cluster View (5 min)
+## Segment 3 — Gloo Mesh Enterprise UI — Multi-Cluster View (5 min)
 
 **Show:** Browser tab with `http://localhost:8090`  
 **Goal:** Show the cross-cluster topology and ambient mesh state.
@@ -181,7 +142,7 @@ Navigate to graph/topology if available:
 
 ---
 
-## Segment 5 — Bidirectional Cross-Cluster Federation (7 min)
+## Segment 4 — Bidirectional Cross-Cluster Federation (7 min)
 
 **Show:** Terminal, then Gloo Mesh UI  
 **Goal:** Demonstrate MCP calls in both directions across clusters.
@@ -220,7 +181,7 @@ Navigate to Gloo Mesh UI, show the traffic:
 
 ---
 
-## Segment 6 — External MCP Servers (4 min)
+## Segment 5 — External MCP Servers (4 min)
 
 **Show:** Slide 7 (External MCP Servers) + terminal  
 **Goal:** Show that a public SaaS MCP server is wired up with the same two resources as an internal one — and demonstrate the call live.
@@ -262,7 +223,7 @@ Show the `tools/list` response — the search server's tools come back through t
 
 ---
 
-## Segment 7 — Tool-Level RBAC (3 min)
+## Segment 6 — Tool-Level RBAC (3 min)
 
 **Show:** Slide 8 (Tool-Level RBAC) + terminal  
 **Goal:** Demonstrate that the gateway can restrict *which tools* an agent can call on a backend — not just which backends it can reach.
@@ -305,7 +266,7 @@ curl -s -H "Authorization: Bearer $TOKEN" ... \
 
 ---
 
-## Segment 8 — Q&A (2 min)
+## Segment 7 — Q&A (2 min)
 
 **Show:** Slide 6 (Federation) as backdrop  
 **Goal:** Invite questions. Have these prompts ready if the room is silent.
@@ -334,11 +295,6 @@ curl -s -H "Authorization: Bearer $TOKEN" ... \
 ---
 
 ## Troubleshooting
-
-**AgentRegistry UI shows no servers:**
-```bash
-KUBE_CONTEXT=cluster1 ./scripts/07-register-mcp-servers.sh
-```
 
 **AgentGateway Enterprise UI not loading on :4000:**
 ```bash

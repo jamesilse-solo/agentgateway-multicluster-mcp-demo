@@ -171,9 +171,6 @@ spec:
     name: mcp-route-remote
   - group: gateway.networking.k8s.io
     kind: HTTPRoute
-    name: areg-mcp-route
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
     name: gloo-mesh-ui-route
   - group: gateway.networking.k8s.io
     kind: HTTPRoute

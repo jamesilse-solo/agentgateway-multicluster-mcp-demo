@@ -113,7 +113,6 @@ Four calls, two each from each tenant. The cross-tenant attempts are blocked at 
 |---|---|
 | Per-tenant Keycloak clients with distinct audiences | ✅ |
 | Audience-restricted gateway backend (cross-tenant blocked) | ✅ |
-| **AgentRegistry write-API RBAC** | ❌ — the registry currently runs with `demoAuthEnabled: true`. Switching to OIDC-backed write scopes requires Helm-value changes on the `agentregistry` chart. Out of scope for this example |
 | Per-tool RBAC by JWT role/group claim | ❌ — the per-tenant tool allowlists from Example 2 still operate by *path*. Per-tool filtering keyed on a JWT `groups` claim requires OPA or a custom CEL bundle |
 
 ---

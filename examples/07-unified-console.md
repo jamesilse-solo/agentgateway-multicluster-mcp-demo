@@ -8,7 +8,7 @@ To run it: `./scripts/04d-unified-console.sh` then open `http://<agw-lb>/console
 
 ## The setup in one sentence
 
-There are four UIs in this POC (AgentGateway Enterprise, AgentRegistry, Gloo Mesh, MCP Inspector). Each lives on a different port. The unified console is a static index page served by the gateway itself at `/console/` — one URL, behind the same OIDC, with cards linking to all four.
+There are three UIs in this POC (AgentGateway Enterprise, Gloo Mesh, MCP Inspector). Each lives on a different port. The unified console is a static index page served by the gateway itself at `/console/` — one URL, behind the same OIDC, with cards linking to all three.
 
 ---
 
@@ -20,16 +20,14 @@ flowchart LR
     AGW["AgentGateway Hub"]
     Console["Static HTML index<br/>(nginx pod)"]
     UI1["AGW Enterprise UI<br/>(port 4000)"]
-    UI2["AgentRegistry<br/>(port 8080)"]
-    UI3["Gloo Mesh UI<br/>(port 8090)"]
-    UI4["MCP Inspector<br/>(port 6274)"]
+    UI2["Gloo Mesh UI<br/>(port 8090)"]
+    UI3["MCP Inspector<br/>(port 6274)"]
 
     User -- "http://<lb>/console/" --> AGW
     AGW -- "OIDC check, then proxy" --> Console
     User -. "(card link)" .-> UI1
     User -. "(card link)" .-> UI2
     User -. "(card link)" .-> UI3
-    User -. "(card link)" .-> UI4
 
     style AGW fill:#8023C3,stroke:#fff,color:#fff
     style Console fill:#1E2035,stroke:#8023C3,color:#fff
