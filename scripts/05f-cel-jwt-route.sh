@@ -52,7 +52,7 @@ set -euo pipefail
 #   ./scripts/05f-cel-jwt-route.sh --cleanup        # remove everything
 #
 # After apply, test with:
-#   AGW_LB=$(kubectl --context cluster1-singtel -n agentgateway-system \
+#   AGW_LB=$(kubectl --context cluster1 -n agentgateway-system \
 #     get gateway agentgateway-hub -o jsonpath='{.status.addresses[0].value}')
 #   TOK=$(curl -s -X POST "http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token" \
 #     -d 'grant_type=password&username=demo&password=demo-pass' \
