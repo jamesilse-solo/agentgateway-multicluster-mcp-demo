@@ -19,12 +19,8 @@ graph TB
             end
             subgraph "agentgateway-system (cluster1)"
                 AGW_CTRL1[agentgateway-controller]
-                AGW_PROXY1[agentgateway-hub<br/>+ ExtAuth + Redis]
+                AGW_PROXY1[agentgateway-hub<br/>+ ExtAuth + Redis + ExtProc]
                 MCP_SERVER1[mcp-server-everything]
-            end
-            subgraph "agentregistry (cluster1)"
-                AREG1[agent-registry-server<br/>Enterprise v0.0.13]
-                AREG_PG1[postgres/pgvector]
             end
         end
 
@@ -51,7 +47,6 @@ graph TB
     AGW_PROXY1 -.->|"2b. cross-cluster via ambient mesh"| EW1
     EW1 -.->|"HBONE mTLS"| EW2
     EW2 -.->|"to spoke"| MCP_SERVER2
-    AREG1 -->|"gRPC backend discovery (21212)"| AGW_PROXY1
 
     CLIENT[AI Client / MCP Inspector] -->|"MCP/HTTP"| AGW_PROXY1
 
@@ -60,7 +55,6 @@ graph TB
     style EW1 fill:#f3e5f5
     style EW2 fill:#f3e5f5
     style KC fill:#fff9c4
-    style AREG1 fill:#e8f5e9
 ```
 
 ---
@@ -361,19 +355,6 @@ curl -si "http://${AGW_LB}/mcp" \
 | enterprise-agentgateway-crds | `oci://us-docker.pkg.dev/solo-public/enterprise-agentgateway/charts/enterprise-agentgateway-crds --version v2.3.0-rc.3` |
 | enterprise-agentgateway | `oci://us-docker.pkg.dev/solo-public/enterprise-agentgateway/charts/enterprise-agentgateway --version v2.3.0-rc.3` |
 
-### AgentRegistry Images
-
-| Image | Full Path |
-|-------|-----------|
-| server | `docker.io/pmuir/agentregistry-server:add-agentgateway-resource` |
-| postgres/pgvector (bundled) | `docker.io/pgvector/pgvector:pg18` |
-
-### AgentRegistry Helm Chart
-
-| Chart | OCI Path |
-|-------|----------|
-| agentregistry | `oci://ghcr.io/agentregistry-dev/agentregistry/charts/agentregistry` |
-
 ### Gloo Mesh Enterprise Images (v2.12.3)
 
 | Image | Full Path |
@@ -651,8 +632,6 @@ This script installs all components on a single cluster. Run it once per cluster
 | `BOOKINFO_MANIFEST` | No | (fetches from GitHub) | Local path to bookinfo manifest |
 | `NETSHOOT_IMAGE` | No | `nicolaka/netshoot:latest` | Debug pod image |
 | `NODE_IMAGE` | No | `node:22-alpine` | MCP server base image |
-| `INSTALL_AGENT_REGISTRY` | No | `false` | Set `true` on hub cluster |
-| `AREG_CHART_PATH` | No | — | Path to agent registry helm chart (required if above is `true`) |
 
 ### What it installs
 
@@ -663,10 +642,6 @@ This script installs all components on a single cluster. Run it once per cluster
 5. East-west gateway (local only — no peering yet)
 6. AgentGateway Enterprise (CRDs + control plane)
 7. Dummy MCP server (`mcp-server-everything`)
-8. Agent Registry (hub cluster only, when `INSTALL_AGENT_REGISTRY=true`)
-   - Uses `pgvector/pgvector:pg18` image (not standard postgres) for pgvector extension support
-   - Auto-generates a JWT signing key via `openssl rand -hex 32`
-   - Requires a default StorageClass with working provisioner (see Prerequisites)
 
 ### Example: Hub Cluster (Cluster 1)
 
@@ -677,8 +652,6 @@ export KUBE_CONTEXT=cluster1
 export GLOO_MESH_LICENSE_KEY=<your-key>
 export AGENTGATEWAY_LICENSE_KEY=<your-key>
 export CACERTS_DIR=./certs/cluster1
-export INSTALL_AGENT_REGISTRY=true
-export AREG_CHART_PATH=./charts/agentregistry
 
 # Override for artifact repo (if air-gapped)
 # export ISTIO_REPO=my-registry.internal/soloio-img/istio
@@ -793,113 +766,6 @@ TOKEN=$(curl -s -X POST http://<agw-lb>/realms/solo-demo/protocol/openid-connect
   | jq -r ".id_token")
 ```
 
-## Phase 4: Enterprise AgentRegistry (`scripts/04-areg-enterprise.sh`)
-
-Upgrades the community AgentRegistry (0.2.1) to **AgentRegistry Enterprise v0.0.13** and connects it to AgentGateway as a backend discovery source.
-
-### Parameters
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `KUBE_CONTEXT` | No | `cluster1` | kubectl context |
-| `AREG_NAMESPACE` | No | `agentregistry` | Namespace for AgentRegistry |
-| `AREG_HELM_REPO` | No | `oci://us-docker.pkg.dev/agentregistry/enterprise/helm/agentregistry-enterprise` | OCI chart path |
-| `AREG_VERSION` | No | `0.0.13` | Chart version (no `v` prefix) |
-| `AREG_JWT_KEY` | No | _(random)_ | JWT signing key — set to a stable value to avoid session invalidation on re-runs |
-| `OIDC_CLIENT_ID` | No | `agw-client` | Keycloak OIDC client ID used by AgentRegistry |
-| `OIDC_CLIENT_SECRET` | No | `agw-client-secret` | Keycloak OIDC client secret |
-
-### Example
-
-```bash
-export KUBE_CONTEXT=cluster1
-# Optional: pin the JWT key so re-runs don't invalidate existing sessions
-export AREG_JWT_KEY=$(openssl rand -hex 32)
-
-./scripts/04-areg-enterprise.sh
-```
-
-### What it does
-
-1. `helm upgrade --install agentregistry` in the existing `agentregistry` namespace (existing PVC preserved)
-2. Keeps bundled PostgreSQL/pgvector, enables built-in seed data (363 MCP server catalog)
-3. Creates `AgentgatewayBackend` wiring AREG MCP port (31313) to AgentGateway at `/mcp/registry`
-4. Creates `HTTPRoute` routing `/mcp/registry` → the AREG backend through the hub gateway
-
-### Access AgentRegistry UI
-
-```bash
-# UI (port 8080)
-kubectl --context cluster1 -n agentregistry port-forward svc/agentregistry-agentregistry-enterprise 8080:8080
-# Open: http://localhost:8080
-
-# MCP endpoint (port 31313) — requires Bearer token
-kubectl --context cluster1 -n agentregistry port-forward svc/agentregistry-agentregistry-enterprise 31313:31313
-# POST http://localhost:31313/mcp with Authorization: Bearer <token>
-```
-
-> The built-in seed data populates ~363 MCP server entries. Disable with
-> `config.disableBuiltinSeed=true` if you want a clean slate.
-
----
-
-## Phase 4a: AGW Enterprise Management UI (`scripts/04a-agw-management-ui.sh`)
-
-Installs the **AgentGateway Enterprise management UI** (`solo-enterprise-ui`, served on port 4000 via port-forward), the OTel collector, and ClickHouse for trace + metric storage. Configures the AGW data plane to emit traces and per-agent metrics so the UI populates with real traffic data.
-
-This is the control-plane governance view referenced in `POC-Success-Criteria-v2/Phase7-Observability/`. Without it, the AGW data plane runs but emits no telemetry — the UI shows "No data available".
-
-### Parameters
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `KUBE_CONTEXT` | No | `cluster1` | kubectl context |
-| `AGW_NAMESPACE` | No | `agentgateway-system` | AGW namespace |
-| `AGW_MGMT_VERSION` | No | `0.3.12` | `management` chart version |
-| `AGW_CHART_VERSION` | No | `v2.3.0-rc.3` | `enterprise-agentgateway` chart version |
-
-### What it does
-
-1. `helm install agw-management` from `oci://us-docker.pkg.dev/solo-public/solo-enterprise-helm/charts/management` — deploys `solo-enterprise-ui`, `solo-enterprise-telemetry-collector`, and `agw-management-clickhouse`
-2. Patches `solo-enterprise-ui` deployment CPU requests to 50m per container so it fits on small demo nodes
-3. Applies `EnterpriseAgentgatewayParameters/agentgateway-config` with:
-   - `tracing.otlpEndpoint: solo-enterprise-telemetry-collector...:4317`
-   - `metrics.fields.add.user_id` for per-agent breakdown
-   - `logging.fields.add.jwt.all` for identity in logs
-4. `helm upgrade enterprise-agentgateway --reuse-values --set gatewayClassParametersRefs.enterprise-agentgateway.{group,kind,name,namespace}=...` so the GatewayClass picks up the params resource
-5. Restarts the AGW controller (`enterprise-agentgateway`) so the GatewayClass `parametersRef` populates
-6. Restarts the AGW data plane (`agentgateway-hub`) so the rendered ConfigMap includes the new tracing block
-7. Restarts `solo-enterprise-ui` and the telemetry collector once ClickHouse is up so the schema migration runs cleanly and queued exports flush
-
-### Access the UI
-
-```bash
-kubectl --context cluster1 -n agentgateway-system port-forward svc/solo-enterprise-ui 4000:80
-# Open: http://localhost:4000
-```
-
-### Verify telemetry pipeline
-
-```bash
-# After sending some traffic (./demo/send-traffic.sh):
-kubectl --context cluster1 -n agentgateway-system logs solo-enterprise-telemetry-collector-0 --tail=20 | grep -iE "error|fail"
-# Empty = collector exporting to ClickHouse cleanly. Errors = check the
-# scripts/04a-agw-management-ui.sh restart steps ran.
-
-# Confirm parametersRef on GatewayClass
-kubectl --context cluster1 get gatewayclass enterprise-agentgateway -o jsonpath='{.spec.parametersRef.name}'
-# Expected: agentgateway-config
-```
-
-### Run
-
-```bash
-./scripts/04a-agw-management-ui.sh
-```
-
-> **CPU note**: The chart's defaults request ~700m CPU for `solo-enterprise-ui` alone (4 containers × 100-250m). On demo-sized nodes (`t3.medium`, single-node), this won't schedule. The patched values (50m × 4 = 200m) are sufficient for demo traffic; raise for production workloads.
-
----
 
 ## Phase 5: Authentication (`scripts/05-extauth.sh`)
 
@@ -1035,112 +901,6 @@ Red Hat Service Mesh cannot use AGW as a waypoint for this east-west path.
 
 ---
 
-## Phase 7: Register MCP Servers in AgentRegistry (`scripts/07-register-mcp-servers.sh`)
-
-Registers three MCP servers into the AgentRegistry Enterprise catalog so they appear in the UI and are discoverable by AI agents browsing the registry.
-
-### Parameters
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `KUBE_CONTEXT` | No | `cluster1` | Hub cluster kubectl context |
-| `AGW_NAMESPACE` | No | `agentgateway-system` | AGW namespace |
-| `AREG_NAMESPACE` | No | `agentregistry` | AgentRegistry namespace |
-| `OIDC_USER` | No | `demo` | Keycloak user for token acquisition |
-| `OIDC_PASS` | No | `demo-pass` | Keycloak user password |
-
-### Example
-
-```bash
-./scripts/07-register-mcp-servers.sh
-```
-
-The script port-forwards AgentRegistry (`:8080`), acquires a Bearer token, and registers the servers via `POST /v0/servers`. It stays running and prints the UI URL when done — press `Ctrl-C` to stop.
-
-### Servers registered
-
-| Server name | Remote URL | Notes |
-|-------------|------------|-------|
-| `com.amazonaws/mcp-everything-local` | `http://<AGW_LB>/mcp` | mcp-server-everything on cluster1 via AGW hub |
-| `com.amazonaws/mcp-everything-remote` | `http://<AGW_LB>/mcp/remote` | mcp-server-everything on cluster2 (cross-cluster) |
-| `io.solo/search-solo-io` | `https://search.solo.io/mcp` | Solo.io docs search MCP (public) |
-
-### Namespace convention
-
-The MCP registry enforces that the server name's namespace reverse-maps to the URL's domain:
-
-```
-io.solo/*    → remote URL must be on *.solo.io       (e.g. search.solo.io)
-com.amazonaws/* → remote URL must be on *.amazonaws.com (e.g. AWS ELB hostnames)
-```
-
-The two in-cluster servers are accessed via the AgentGateway ELB (an `*.amazonaws.com` hostname), so they use the `com.amazonaws` namespace. The Solo.io docs server uses `io.solo`.
-
-### Manual registration (curl)
-
-If you need to re-register a server manually (e.g. after the LB address changes):
-
-```bash
-# Get a token first
-TOKEN=$(curl -s -X POST http://<agw-lb>/realms/solo-demo/protocol/openid-connect/token \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  -d 'grant_type=password&username=demo@example.com&password=demo-pass' \
-  -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
-  | python3 -c "import sys,json; t=json.load(sys.stdin); print(t.get('access_token',''))")
-
-AGW_LB=$(kubectl --context cluster1 -n agentgateway-system \
-  get svc agentgateway-hub \
-  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-
-# Register — mcp-server-everything (cluster1)
-curl -s -X POST http://localhost:8080/v0/servers \
-  -H "Authorization: Bearer ${TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
-    "name":        "com.amazonaws/mcp-everything-local",
-    "title":       "MCP Everything — cluster1 (local)",
-    "description": "MCP reference server on cluster1",
-    "version":     "1.0.0",
-    "remotes": [{"type": "streamable-http", "url": "http://'"${AGW_LB}"'/mcp"}]
-  }'
-
-# Register — mcp-server-everything (cluster2, cross-cluster)
-curl -s -X POST http://localhost:8080/v0/servers \
-  -H "Authorization: Bearer ${TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
-    "name":        "com.amazonaws/mcp-everything-remote",
-    "title":       "MCP Everything — cluster2 (remote, cross-cluster)",
-    "description": "MCP reference server on cluster2 routed cross-cluster",
-    "version":     "1.0.0",
-    "remotes": [{"type": "streamable-http", "url": "http://'"${AGW_LB}"'/mcp/remote"}]
-  }'
-
-# Register — Solo.io docs search (public, no auth required)
-curl -s -X POST http://localhost:8080/v0/servers \
-  -H "Authorization: Bearer ${TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
-    "name":        "io.solo/search-solo-io",
-    "title":       "Solo.io Docs MCP",
-    "description": "Solo.io documentation search MCP server",
-    "version":     "1.0.0",
-    "remotes": [{"type": "streamable-http", "url": "https://search.solo.io/mcp"}]
-  }'
-
-# List registered servers
-curl -s -H "Authorization: Bearer ${TOKEN}" \
-  "http://localhost:8080/v0/servers?search=com.amazonaws" | python3 -m json.tool
-```
-
-### UI access
-
-The AREG UI uses OIDC for login. With Keycloak as the IdP, the AGW LB serves the realm endpoints directly — no `/etc/hosts` workaround needed.
-
-
 ## Phase 8: Gloo Mesh Enterprise (`scripts/08-gloo-mesh-enterprise.sh`)
 
 Installs Gloo Mesh Enterprise on both clusters — management plane on cluster1 (hub) and agents on both clusters. Also adds a `/gloo-mesh` route to AgentGateway so the Gloo Mesh UI is reachable through the same authenticated gateway.
@@ -1232,19 +992,11 @@ After all phases complete, run the interactive demo (`scripts/demo.sh`) or follo
 # Terminal 1: Hub gateway
 kubectl --context cluster1 -n agentgateway-system port-forward svc/agentgateway-hub 8080:80
 
-# Terminal 2: AgentRegistry UI
-kubectl --context cluster1 -n agentregistry port-forward svc/agentregistry-agentregistry-enterprise 8080:8080
-
-# Terminal 3: token acquisition (Keycloak realm via AGW LB)
+# Terminal 2: token acquisition (Keycloak realm via AGW LB)
 # (no port-forward needed — Keycloak realm endpoints are exposed via AGW LB)
 ```
 
-**Step 1 — Show AgentRegistry catalog**
-- Open http://localhost:8080 (AgentRegistry UI)
-- Show the MCP server catalog (~363 registered servers from seed data)
-- Explain: central registry of AI capabilities, self-service onboarding per BU
-
-**Step 2 — Flow 1: User auth enforcement (browser redirect)**
+**Step 1 — Flow 1: User auth enforcement (browser redirect)**
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/mcp
 # Expected: 302 → Keycloak login page
@@ -1252,7 +1004,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/mcp
 - Open `http://<agw-lb>/mcp` in a browser — shows Keycloak login page
 - Explain: every MCP call requires identity, enforced at the gateway with ExtAuth
 
-**Step 3 — Flow 2: MCP client auth (Bearer token)**
+**Step 2 — Flow 2: MCP client auth (Bearer token)**
 ```bash
 # Acquire JWT from Keycloak
 TOKEN=$(curl -s -X POST http://<agw-lb>/realms/solo-demo/protocol/openid-connect/token \
@@ -1282,7 +1034,7 @@ curl -s -X POST http://localhost:8080/mcp \
 - Explain: AI agents and SDKs use JWT Bearer tokens — no browser required
 - Note: MCP OAuth dynamic discovery (Claude Code, MCP Inspector auto-registering) — see the [Authentication section](#authentication-with-agentgateway--keycloak)
 
-**Step 4 — Cross-cluster MCP (the differentiator)**
+**Step 3 — Cross-cluster MCP (the differentiator)**
 ```bash
 # Scale down cluster1's MCP server — traffic must now cross clusters
 kubectl --context cluster1 -n agentgateway-system scale deploy mcp-server-everything --replicas=0
@@ -1329,7 +1081,7 @@ kubectl get pods -n istio-eastwest
 kubectl get pods -n bookinfo
 kubectl get pods -n debug
 kubectl get pods -n agentgateway-system
-kubectl get pods -n agentregistry          # hub only
+kubectl get pods -n keycloak               # hub only
 ```
 
 ### Verify Helm Releases
@@ -1342,7 +1094,7 @@ Expected releases per cluster:
 - `istio-base`, `istiod`, `istio-cni`, `ztunnel` (istio-system)
 - `peering-eastwest`, `peering-remote` (istio-eastwest)
 - `enterprise-agentgateway-crds`, `enterprise-agentgateway` (agentgateway-system)
-- `agentregistry` (agentregistry — hub only)
+- `keycloak` (keycloak — hub only)
 
 ### Test Cross-Cluster Connectivity
 
@@ -1377,27 +1129,6 @@ npx @modelcontextprotocol/inspector
 # URL: http://localhost:8080/mcp
 ```
 
-### Access Agent Registry UI
-
-```bash
-# Port-forward to the agent registry (hub cluster only)
-kubectl --context cluster1 -n agentregistry port-forward svc/agentregistry 12121:12121
-
-# Open in browser: http://localhost:12121
-```
-
-### Access Agent Registry gRPC (AgentGateway integration)
-
-```bash
-kubectl --context cluster1 -n agentregistry port-forward svc/agentregistry 21212:21212
-```
-
-### Access Agent Registry MCP Endpoint
-
-```bash
-kubectl --context cluster1 -n agentregistry port-forward svc/agentregistry 31313:31313
-```
-
 ---
 
 ## Cleanup
@@ -1406,7 +1137,6 @@ kubectl --context cluster1 -n agentregistry port-forward svc/agentregistry 31313
 
 ```bash
 # Reverse order of installation
-helm uninstall agentregistry -n agentregistry 2>/dev/null || true
 helm uninstall enterprise-agentgateway -n agentgateway-system
 helm uninstall enterprise-agentgateway-crds -n agentgateway-system
 helm uninstall peering-remote -n istio-eastwest 2>/dev/null || true
@@ -1416,7 +1146,7 @@ helm uninstall istio-cni -n istio-system
 helm uninstall istiod -n istio-system
 helm uninstall istio-base -n istio-system
 
-kubectl delete namespace bookinfo debug agentgateway-system istio-eastwest agentregistry 2>/dev/null || true
+kubectl delete namespace bookinfo debug agentgateway-system istio-eastwest keycloak 2>/dev/null || true
 ```
 
 ---
@@ -1661,52 +1391,6 @@ The same pattern applies for any additional backend — update the `path.value` 
 
 ---
 
-### Step 4 — Wire AgentRegistry catalog via AgentGateway (cluster1)
-
-AgentRegistry Enterprise exposes its MCP catalog on port 31313. The backend and route below make the catalog discoverable through the same authenticated hub gateway at `/mcp/registry`.
-
-```yaml
-# AgentgatewayBackend — points at the AREG MCP port
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayBackend
-metadata:
-  name: agent-registry-backend
-  namespace: agentgateway-system
-spec:
-  mcp:
-    failureMode: FailOpen
-    targets:
-    - name: agent-registry-mcp
-      static:
-        host: agentregistry-agentregistry-enterprise.agentregistry.svc.cluster.local
-        port: 31313
-```
-
-```yaml
-# HTTPRoute — routes /mcp/registry to AgentRegistry
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: areg-mcp-route
-  namespace: agentgateway-system
-spec:
-  parentRefs:
-  - name: agentgateway-hub
-    namespace: agentgateway-system
-  rules:
-  - matches:
-    - path:
-        type: PathPrefix
-        value: /mcp/registry
-    backendRefs:
-    - group: agentgateway.dev
-      kind: AgentgatewayBackend
-      name: agent-registry-backend
-      namespace: agentgateway-system
-```
-
----
-
 ### Verifying routes
 
 ```bash
@@ -1725,11 +1409,6 @@ TOKEN=$(curl -s -X POST http://<agw-lb>/realms/solo-demo/protocol/openid-connect
 curl -s -o /dev/null -w '%{http_code}\n' \
   -H "Authorization: Bearer ${TOKEN}" \
   "http://${AGW_LB}/mcp/remote"
-
-# Test AgentRegistry catalog route
-curl -s -o /dev/null -w '%{http_code}\n' \
-  -H "Authorization: Bearer ${TOKEN}" \
-  "http://${AGW_LB}/mcp/registry"
 ```
 
 ---

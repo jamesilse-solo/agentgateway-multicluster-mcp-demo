@@ -109,28 +109,29 @@ echo -e "  → Demonstrate that an agent can be approved to reach one destinatio
 echo -e "    while being blocked from another, all by SPIFFE identity at L4."
 pause
 
-AREG_SVC_NAME="${AREG_SVC_NAME:-agentregistry-agentregistry-enterprise}"
-AREG_NS="${AREG_NS:-agentregistry}"
-AREG_HOST="${AREG_SVC_NAME}.${AREG_NS}.svc.cluster.local"
+LATERAL_SVC="${LATERAL_SVC:-keycloak}"
+LATERAL_NS="${LATERAL_NS:-keycloak}"
+LATERAL_HOST="${LATERAL_SVC}.${LATERAL_NS}.svc.cluster.local"
+LATERAL_PROBE_PATH="${LATERAL_PROBE_PATH:-/realms/solo-demo/.well-known/openid-configuration}"
 
 show "Baseline: curl two destinations from netshoot"
 ${KC} -n "${DEBUG_NS}" exec "${NETSHOOT}" -- sh -c "
   curl -s --max-time 3 -o /dev/null -w '  HTTP %{http_code} → mcp-server-everything (intended target)\n' http://mcp-server-everything.${AGW_NS}.svc.cluster.local/ || true
-  curl -s --max-time 3 -o /dev/null -w '  HTTP %{http_code} → ${AREG_SVC_NAME} (\"lateral\" target)\n' http://${AREG_HOST}:8080/v0/servers || true
+  curl -s --max-time 3 -o /dev/null -w '  HTTP %{http_code} → ${LATERAL_SVC} (\"lateral\" target)\n' http://${LATERAL_HOST}:8080${LATERAL_PROBE_PATH} || true
 "
 pause
 
-show "Apply DENY on ${AREG_SVC_NAME} from ${DEBUG_NS} (lateral target only)"
+show "Apply DENY on ${LATERAL_SVC} from ${DEBUG_NS} (lateral target only)"
 ${KC} apply -f - <<EOF
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
 metadata:
   name: egr03-lateral-deny
-  namespace: ${AREG_NS}
+  namespace: ${LATERAL_NS}
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: agentregistry-enterprise
+      app: keycloak
   action: DENY
   rules:
   - from:
@@ -143,14 +144,15 @@ sleep 4
 show "Repeat both curls (only intended target should succeed)"
 ${KC} -n "${DEBUG_NS}" exec "${NETSHOOT}" -- sh -c "
   curl -s --max-time 3 -o /dev/null -w '  HTTP %{http_code} → mcp-server-everything (still allowed)\n' http://mcp-server-everything.${AGW_NS}.svc.cluster.local/ || true
-  curl -s --max-time 3 -o /dev/null -w '  HTTP %{http_code} → ${AREG_SVC_NAME} (now blocked)\n' http://${AREG_HOST}:8080/v0/servers || true
+  curl -s --max-time 3 -o /dev/null -w '  HTTP %{http_code} → ${LATERAL_SVC} (now blocked)\n' http://${LATERAL_HOST}:8080${LATERAL_PROBE_PATH} || true
 "
 note "ztunnel enforces per-destination policy by SPIFFE identity. A compromised
-      agent cannot pivot to destinations it has no explicit policy for."
+      agent cannot pivot to destinations it has no explicit policy for —
+      including the platform's own IdP."
 pause
 
-show "${KC} delete authorizationpolicy egr03-lateral-deny -n ${AREG_NS}"
-${KC} delete authorizationpolicy egr03-lateral-deny -n "${AREG_NS}"
+show "${KC} delete authorizationpolicy egr03-lateral-deny -n ${LATERAL_NS}"
+${KC} delete authorizationpolicy egr03-lateral-deny -n "${LATERAL_NS}"
 ok "Policy deleted."
 pause
 

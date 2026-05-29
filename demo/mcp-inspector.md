@@ -5,7 +5,7 @@ This walks through pointing the [Model Context Protocol Inspector](https://githu
 - Interactively browsing the tools an MCP server exposes
 - Testing auth (Bearer JWT) and rate limits without writing client code
 - Verifying that the gateway's tool-RBAC policies filter `tools/list` correctly
-- Running against `/mcp`, `/mcp/remote`, `/mcp/search`, and `/mcp/registry` to compare local, federated, external, and registry-backed MCP behaviour
+- Running against `/mcp`, `/mcp/remote`, and `/mcp/search` to compare local, federated, and external MCP behaviour
 
 Two scenarios are covered:
 
@@ -48,9 +48,8 @@ Available paths (the routes attached to the hub):
 | `/mcp` | `mcp-server-everything` (local on cluster1) | Reference MCP server with 10 tools |
 | `/mcp/remote` | `mcp-server-everything` on cluster2 via HBONE | Same server, federated cross-cluster |
 | `/mcp/search` | `search.solo.io` (public, HTTPS) | External MCP server with `mcp.authorization` allowlist (`mcp.tool.name == "search"`) |
-| `/mcp/registry` | AgentRegistry's MCP catalog | `tools/list` returns the catalog of registered servers |
 
-All four paths require a valid `Authorization: Bearer <JWT>` header.
+All three paths require a valid `Authorization: Bearer <JWT>` header.
 
 ---
 
@@ -182,10 +181,6 @@ npx @modelcontextprotocol/inspector \
   --tool-name get_chunks
 # → "Unknown tool: get_chunks"  (rejected at the gateway; never reaches the upstream)
 ```
-
-### Example 4 — registry `/mcp/registry`
-
-The AgentRegistry exposes its catalog as an MCP server. `tools/list` returns synthetic tools representing discovery operations on the registry itself.
 
 ---
 

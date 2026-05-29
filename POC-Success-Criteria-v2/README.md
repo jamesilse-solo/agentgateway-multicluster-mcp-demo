@@ -47,7 +47,6 @@ Each phase directory contains:
 
 | Phase | Directory | Tests |
 |-------|-----------|-------|
-| 1 | [Phase1-MCP-Server-Lifecycle](Phase1-MCP-Server-Lifecycle/) | CR-01, CR-02, CR-03 |
 | 2 | [Phase2-Securing-Tool-Calls](Phase2-Securing-Tool-Calls/) | MESH-01, MESH-02, MESH-03 |
 | 3 | [Phase3-Federated-MCP-Mesh](Phase3-Federated-MCP-Mesh/) | FED-01, FED-02, FED-03 |
 | 4 | [Phase4-Egress-and-DLP](Phase4-Egress-and-DLP/) | EGR-01, EGR-02, EGR-03 |

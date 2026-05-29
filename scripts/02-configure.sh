@@ -159,8 +159,4 @@ if [[ "${GATEWAY_ROLE}" == "hub" ]]; then
   echo "# Port-forward to AgentGateway Hub:"
   echo "  ${KC} -n agentgateway-system port-forward svc/${GATEWAY_NAME} 8080:80"
   echo "  # Then connect MCP Inspector to: http://localhost:8080/mcp"
-  echo ""
-  echo "# Port-forward to Agent Registry UI:"
-  echo "  ${KC} -n agentregistry port-forward svc/agentregistry 12121:12121"
-  echo "  # Then open: http://localhost:12121"
 fi

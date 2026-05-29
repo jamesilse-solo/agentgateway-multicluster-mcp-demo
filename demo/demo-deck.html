@@ -270,7 +270,7 @@
     <div class="title-hero">
       <div class="title-eyebrow">Enterprise AI Infrastructure</div>
       <h1 class="title-h1">Federated AI Agent<br><span>Infrastructure</span></h1>
-      <p class="title-sub">AgentGateway · AgentRegistry · Ambient Mesh</p>
+      <p class="title-sub">AgentGateway · Ambient Mesh · Keycloak</p>
       <div class="pill-row">
         <span class="pill purple">MCP Gateway</span>
         <span class="pill green">Agent Registry</span>
@@ -374,20 +374,20 @@
         <text x="127" y="170" text-anchor="middle"
               font-family="DM Mono" font-size="7.5" fill="rgba(128,35,195,0.65)">MCP endpoint: /mcp</text>
 
-        <!-- AgentRegistry -->
+        <!-- Keycloak (OIDC) -->
         <rect x="254" y="104" width="235" height="74" rx="8"
               fill="rgba(31,238,179,0.08)" stroke="rgba(31,238,179,0.55)" stroke-width="1.5"/>
         <rect x="254" y="104" width="235" height="3" rx="1.5" fill="#1FEEB3"/>
         <text x="371" y="129" text-anchor="middle"
-              font-family="Figtree" font-weight="700" font-size="12" fill="white">AgentRegistry</text>
+              font-family="Figtree" font-weight="700" font-size="12" fill="white">Keycloak (OIDC)</text>
         <text x="371" y="144" text-anchor="middle"
-              font-family="DM Mono" font-size="8" fill="#1FEEB3">MCP server catalog · discovery API</text>
+              font-family="DM Mono" font-size="8" fill="#1FEEB3">realms · clients · JWKS · PKCE</text>
         <text x="371" y="157" text-anchor="middle"
-              font-family="DM Sans" font-size="8.5" fill="#9DA1BD">namespace convention · pgvector</text>
+              font-family="DM Sans" font-size="8.5" fill="#9DA1BD">issues JWTs · audience-pinned per tenant</text>
         <text x="371" y="170" text-anchor="middle"
-              font-family="DM Mono" font-size="7.5" fill="rgba(31,238,179,0.55)">POST /v0/servers · GET /v0/servers</text>
+              font-family="DM Mono" font-size="7.5" fill="rgba(31,238,179,0.55)">/realms/solo-demo/protocol/openid-connect</text>
 
-        <!-- AGW ↔ AgentRegistry connector -->
+        <!-- AGW ↔ Keycloak connector -->
         <line x1="235" y1="141" x2="254" y2="141"
               stroke="#1FEEB3" stroke-width="1.5" marker-end="url(#ah-green)"/>
         <polygon points="235,137 225,141 235,145" fill="#1FEEB3"/>
@@ -751,50 +751,8 @@ spec:
     </div>
   </div>
 
-  <!-- SLIDE 4 — THE REGISTRY (was 3)                         -->
   <!-- ═══════════════════════════════════════════════════════ -->
-  <div class="slide" id="slide-4-registry">
-    <div class="topbar">
-      <span class="wordmark">Solo.io</span>
-      <span class="topbar-tag">AGENTREGISTRY</span>
-    </div>
-    <div class="slide-body">
-      <div class="overline">Centralized Catalog</div>
-      <h2 class="section-title">One catalog. <span>Every agent knows where to connect.</span></h2>
-      <p class="section-sub">AgentRegistry is the MCP service directory for your entire platform. Agents look up tools by name — not by URL.</p>
-
-      <div class="two-col" style="margin-top:1rem;">
-        <div class="two-col-left">
-          <ul class="bullet-list">
-            <li><strong>Namespace convention</strong> — reverse-domain naming (<code style="font-family:DM Mono,monospace;font-size:0.85em;color:#CC85FF">com.amazonaws/mcp-everything-local</code>) scopes servers to their owning team or cloud</li>
-            <li><strong>Discovery API</strong> — <code style="font-family:DM Mono,monospace;font-size:0.85em;color:#1FEEB3">GET /v0/servers?search=com.amazonaws</code> returns remotes, schema refs, and metadata in one call</li>
-            <li><strong>Open registration</strong> — any team posts a server entry with a URL and a JSON schema reference; the gateway automatically discovers and routes to it</li>
-            <li><strong>No-login API for demo</strong> — anonymous auth enabled; production deployments use OIDC with role-based write control</li>
-          </ul>
-        </div>
-        <div class="two-col-right">
-          <div class="card green">
-            <span class="mono-tag green">REGISTERED SERVERS</span>
-            <h4>com.amazonaws/mcp-everything-local</h4>
-            <p>MCP reference server on cluster1 · served at <code style="font-family:DM Mono,monospace;font-size:0.85em">http://&lt;agw-lb&gt;/mcp</code></p>
-          </div>
-          <div class="card green">
-            <span class="mono-tag green">REGISTERED SERVERS</span>
-            <h4>com.amazonaws/mcp-everything-remote</h4>
-            <p>MCP reference server on cluster2 · cross-cluster via <code style="font-family:DM Mono,monospace;font-size:0.85em">http://&lt;agw-lb&gt;/mcp/remote</code></p>
-          </div>
-          <div class="card green">
-            <span class="mono-tag green">REGISTERED SERVERS</span>
-            <h4>io.solo/search-solo-io</h4>
-            <p>Solo.io documentation search · public endpoint at <code style="font-family:DM Mono,monospace;font-size:0.85em">https://search.solo.io/mcp</code></p>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ═══════════════════════════════════════════════════════ -->
-  <!-- SLIDE 5 — THE GATEWAY (was 4)                          -->
+  <!-- SLIDE 4 — THE GATEWAY                                  -->
   <!-- ═══════════════════════════════════════════════════════ -->
   <div class="slide" id="slide-5-gateway">
     <div class="topbar">
@@ -818,7 +776,7 @@ spec:
           <p>
             <code style="font-family:DM Mono,monospace;font-size:0.8em;color:#20B7F3">/mcp</code> → cluster1 local MCP server<br>
             <code style="font-family:DM Mono,monospace;font-size:0.8em;color:#20B7F3">/mcp/remote</code> → cluster2 via HBONE<br>
-            <code style="font-family:DM Mono,monospace;font-size:0.8em;color:#20B7F3">/mcp/registry</code> → AgentRegistry catalog
+            <code style="font-family:DM Mono,monospace;font-size:0.8em;color:#20B7F3">/mcp/peer</code> → federated peer AGW
           </p>
         </div>
         <div class="card">
@@ -834,7 +792,7 @@ spec:
         <div class="card">
           <span class="mono-tag">GOVERNANCE</span>
           <h4>Enterprise control plane UI</h4>
-          <p>AgentRegistry Enterprise UI at <code style="font-family:DM Mono,monospace;font-size:0.8em;color:#CC85FF">localhost:8080</code> — catalog, traffic logs, auth outcomes, deployed agents. Gloo Mesh UI at <code style="font-family:DM Mono,monospace;font-size:0.8em;color:#CC85FF">localhost:8090</code> — cross-cluster topology and data plane health.</p>
+          <p>AgentGateway Enterprise UI at <code style="font-family:DM Mono,monospace;font-size:0.8em;color:#CC85FF">localhost:4000</code> — routes, backends, policies, traffic logs, auth outcomes. Gloo Mesh UI at <code style="font-family:DM Mono,monospace;font-size:0.8em;color:#CC85FF">localhost:8090</code> — cross-cluster topology and data plane health.</p>
         </div>
         <div class="card blue">
           <span class="mono-tag blue">AMBIENT MESH</span>
@@ -1331,7 +1289,7 @@ spec:
     <div class="slide-body">
       <div class="overline">Single Control Plane</div>
       <h2 class="section-title">One URL. <span>Every UI. Behind the same OIDC.</span></h2>
-      <p class="section-sub">A static console page served by the gateway itself at <code>/console</code>. Cards link to AgentGateway Enterprise, AgentRegistry, Gloo Mesh, and MCP Inspector. The operator gets one bookmark for the entire platform.</p>
+      <p class="section-sub">A static console page served by the gateway itself at <code>/console</code>. Cards link to AgentGateway Enterprise, Gloo Mesh, and MCP Inspector. The operator gets one bookmark for the entire platform.</p>
 
       <div class="two-col" style="margin-top:1.25rem;grid-template-columns:1fr 1.4fr;">
         <div class="two-col-left">
@@ -1351,11 +1309,6 @@ spec:
                 <div style="font-size:0.95rem;">🛡️</div>
                 <div style="font-weight:600;font-size:0.78rem;color:#fff;">AGW Enterprise</div>
                 <div style="font-family:'DM Mono',monospace;font-size:0.62rem;color:#CC85FF;">localhost:4000</div>
-              </div>
-              <div style="background:#151927;border:1px solid rgba(31,238,179,0.4);border-radius:6px;padding:0.6rem;">
-                <div style="font-size:0.95rem;">📚</div>
-                <div style="font-weight:600;font-size:0.78rem;color:#fff;">AgentRegistry</div>
-                <div style="font-family:'DM Mono',monospace;font-size:0.62rem;color:#1FEEB3;">localhost:8080</div>
               </div>
               <div style="background:#151927;border:1px solid rgba(32,183,243,0.4);border-radius:6px;padding:0.6rem;">
                 <div style="font-size:0.95rem;">🌐</div>
@@ -1387,7 +1340,7 @@ spec:
 <nav class="slide-nav" id="slideNav">
   <button id="prevBtn" onclick="changeSlide(-1)" disabled>&#8592;</button>
   <div style="display:flex;gap:0.5rem;align-items:center;" id="dotContainer"></div>
-  <span class="slide-counter" id="counter">1 / 15</span>
+  <span class="slide-counter" id="counter">1 / 14</span>
   <button id="nextBtn" onclick="changeSlide(1)">&#8594;</button>
 </nav>
 

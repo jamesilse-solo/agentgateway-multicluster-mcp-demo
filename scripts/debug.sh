@@ -16,8 +16,6 @@ C1="${CLUSTER1_CONTEXT:-cluster1}"
 C2="${CLUSTER2_CONTEXT:-cluster2}"
 AGW_NS="${AGW_NAMESPACE:-agentgateway-system}"
 KEYCLOAK_NS="${KEYCLOAK_NS:-keycloak}"
-AREG_NS="agentregistry"
-AREG_SVC="agentregistry-agentregistry-enterprise"
 
 KC1="kubectl --context ${C1}"
 KC2="kubectl --context ${C2}"
@@ -86,15 +84,6 @@ check_pod "${C1}" "${AGW_NS}" "app=ext-auth-service"                            
 check_pod "${C1}" "${AGW_NS}" "app=mcp-server-everything"                         "mcp-server-everything (cluster1)"
 check_pod "${C1}" "${KEYCLOAK_NS}" "app=keycloak"                                 "Keycloak OIDC provider (cluster1)"
 
-# AgentRegistry (optional)
-AREG_RUNNING=$(${KC1} get pods -n "${AREG_NS}" -l "app.kubernetes.io/name=agentregistry-enterprise" \
-  --field-selector=status.phase=Running --no-headers 2>/dev/null | wc -l | tr -d ' ')
-if [[ "${AREG_RUNNING}" -ge 1 ]]; then
-  pass "AgentRegistry Enterprise — ${AREG_RUNNING} Running pod(s)"
-else
-  warn "AgentRegistry Enterprise not running — run 04-areg-enterprise.sh"
-fi
-
 # ext-cache (Redis)
 REDIS_RUNNING=$(${KC1} get pods -n "${AGW_NS}" --no-headers 2>/dev/null | grep ext-cache | grep Running | wc -l | tr -d ' ')
 if [[ "${REDIS_RUNNING}" -ge 1 ]]; then
@@ -145,16 +134,16 @@ fi
 
 # AgentgatewayBackends
 check_resource "${C1}" "${AGW_NS}" "agentgatewaybackend" "keycloak-backend"
-for be in mcp-backends mcp-backends-remote agent-registry-backend; do
+for be in mcp-backends mcp-backends-remote; do
   if ${KC1} get agentgatewaybackend "${be}" -n "${AGW_NS}" &>/dev/null; then
     pass "AgentgatewayBackend/${be} exists"
   else
-    warn "AgentgatewayBackend/${be} not found — may need 06-cross-cluster-mcp.sh or 04-areg-enterprise.sh"
+    warn "AgentgatewayBackend/${be} not found — may need 06-cross-cluster-mcp.sh"
   fi
 done
 
 # HTTPRoutes
-for rt in mcp-route mcp-route-remote areg-mcp-route; do
+for rt in mcp-route mcp-route-remote; do
   if ${KC1} get httproute "${rt}" -n "${AGW_NS}" &>/dev/null; then
     pass "HTTPRoute/${rt} exists"
   else
@@ -356,69 +345,6 @@ elif [[ "${CC_CODE}" == "503" ]]; then
 else
   fail "POST /mcp/remote → HTTP ${CC_CODE} (no session ID)"
   [[ -n "${CC_RESP}" ]] && echo "     Raw (first 300): $(echo "${CC_RESP}" | head -c 300)"
-fi
-
-###############################################################################
-# AGENTREGISTRY (optional)
-###############################################################################
-section "AgentRegistry Enterprise (optional)"
-
-if [[ "${AREG_RUNNING}" -ge 1 ]]; then
-  # Port-forward AREG MCP port
-  pkill -f "port-forward.*agentregistry.*31313" 2>/dev/null || true
-  sleep 1
-  ${KC1} -n "${AREG_NS}" port-forward "svc/${AREG_SVC}" 31313:31313 &>/dev/null &
-  PF_AREG_PID=$!
-  sleep 3
-
-  AREG_TOKEN="${TOKEN:-}"
-  if [[ -z "${AREG_TOKEN}" && "${KC_READY}" == "true" ]]; then
-    AREG_TOKEN=$(curl -s --max-time 10 -X POST http://${AGW_LB}/realms/solo-demo/protocol/openid-connect/token \
-      -H 'Content-Type: application/x-www-form-urlencoded' \
-      -d 'grant_type=password&username=demo@example.com&password=demo-pass' \
-      -d 'client_id=agw-client&client_secret=agw-client-secret&scope=openid+email+profile' \
-      | python3 -c "import sys,json; t=json.load(sys.stdin); print(t.get('access_token',''))" 2>/dev/null || echo "")
-  fi
-
-  AREG_INIT=$(curl -si --max-time 15 -X POST "http://localhost:31313/mcp" \
-    -H "Authorization: Bearer ${AREG_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -H "Accept: application/json, text/event-stream" \
-    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"debug-check","version":"1.0"}}}' \
-    2>/dev/null || echo "")
-
-  AREG_HTTP=$(echo "${AREG_INIT}" | grep "^HTTP/" | awk '{print $2}')
-  AREG_SESSION=$(echo "${AREG_INIT}" | grep -i "^mcp-session-id:" | awk '{print $2}' | tr -d '\r')
-
-  if [[ -n "${AREG_SESSION}" ]]; then
-    pass "AgentRegistry MCP initialize → HTTP ${AREG_HTTP}, session: ${AREG_SESSION}"
-
-    AREG_TOOLS=$(curl -s --max-time 10 -X POST "http://localhost:31313/mcp" \
-      -H "Authorization: Bearer ${AREG_TOKEN}" \
-      -H "Mcp-Session-Id: ${AREG_SESSION}" \
-      -H "Content-Type: application/json" \
-      -H "Accept: application/json, text/event-stream" \
-      -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
-      2>/dev/null || echo "")
-    AREG_TOOL_COUNT=$(echo "${AREG_TOOLS}" | grep -o '"name":"[^"]*"' | wc -l | tr -d ' ')
-    if [[ "${AREG_TOOL_COUNT}" -gt 0 ]]; then
-      pass "AgentRegistry tools/list → ${AREG_TOOL_COUNT} tool(s)"
-      echo "${AREG_TOOLS}" | grep -o '"name":"[^"]*"' | cut -d'"' -f4 | head -6 | while read -r t; do
-        echo "     - ${t}"
-      done
-    else
-      fail "AgentRegistry tools/list → 0 tools (check roleMapper CEL + token claims)"
-      echo "     Hint: kubectl -n agentregistry logs deploy/${AREG_SVC} | grep -i 'role\|auth\|claim' | tail -20"
-    fi
-  else
-    fail "AgentRegistry MCP initialize → HTTP ${AREG_HTTP} (no session ID)"
-    echo "     Raw (first 300): $(echo "${AREG_INIT}" | head -c 300)"
-    echo "     Hint: check roleMapper CEL expression and Keycloak token claims"
-  fi
-
-  kill "${PF_AREG_PID}" 2>/dev/null || true
-else
-  warn "AgentRegistry not running — skipping MCP session checks"
 fi
 
 ###############################################################################

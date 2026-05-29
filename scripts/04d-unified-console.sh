@@ -11,7 +11,6 @@ set -euo pipefail
 #
 # The card links inside point at the standard demo/portforward.sh ports
 # on the operator's laptop:
-#   - AgentRegistry UI         (localhost:8080)
 #   - AgentGateway Enterprise  (localhost:4000)
 #   - Gloo Mesh Enterprise     (localhost:8090)
 #   - MCP Inspector            (localhost:6274)
@@ -97,12 +96,6 @@ data:
         <h3>AgentGateway Enterprise</h3>
         <p>Per-agent sessions, request traces, auth + rate-limit outcomes, MCP method metrics.</p>
         <div class="url">localhost:4000</div>
-      </a>
-      <a class="card" href="http://localhost:8080" target="_blank">
-        <div class="icon">📚</div>
-        <h3>AgentRegistry</h3>
-        <p>MCP service catalog. Every registered server in the platform with its schema and endpoint.</p>
-        <div class="url">localhost:8080</div>
       </a>
       <a class="card" href="http://localhost:8090" target="_blank">
         <div class="icon">🌐</div>
