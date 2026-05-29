@@ -1,0 +1,43 @@
+# mcps.yaml — batch input for ./scripts/add-mcp.sh --batch
+#
+# Each entry produces:
+#   - an ar.dev/v1alpha1 MCPServer (the catalog entry)
+#   - an ar.dev/v1alpha1 Deployment bound to the virtual-default Runtime
+#
+# The Virtual deployment adapter then generates the matching AgentGateway
+# resources (AgentgatewayBackend + child HTTPRoute) for you. Each MCP is
+# exposed at  http://<agw-lb>/registry${pathSuffix}.
+#
+# Fields:
+#   name        DNS-1123 lowercase label (a-z 0-9 -). Becomes the MCPServer
+#               name, the Deployment name, and the default pathSuffix.
+#   url         The remote MCP URL. `https://` triggers TLS-to-upstream
+#               automatically.
+#   pathSuffix  (optional) Path under /registry. Default: /${name}.
+#   header      (optional) One HTTP header sent on every upstream request.
+#               Shell variables in the value are expanded by envsubst at
+#               apply time. KEEP THESE IN ENV VARS — do not commit secrets.
+#   tag         (optional) MCPServer tag. Default: latest.
+#
+# Apply:
+#   export GITHUB_TOKEN=ghp_xxx       # if you uncomment the github entry
+#   ./scripts/add-mcp.sh --batch ./scripts/mcps.yaml
+
+- name: search-solo-io
+  url: https://search.solo.io/mcp
+  # pathSuffix: /search-solo-io       # default — included for clarity
+  # tag: latest
+
+# Example: a public remote requiring a bearer header.
+# Uncomment after exporting GITHUB_TOKEN.
+#
+# - name: github-copilot
+#   url: https://api.githubcopilot.com/mcp
+#   header: 'Authorization: Bearer ${GITHUB_TOKEN}'
+
+# Example: an in-cluster MCP server (http://). The AGW LB reaches it
+# through the ambient mesh, so no special networking config is needed.
+#
+# - name: internal-tools
+#   url: http://tools.internal.svc.cluster.local:8080/mcp
+#   pathSuffix: /tools
