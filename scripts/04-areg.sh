@@ -103,6 +103,44 @@ if [[ -n "${AGW_CHART_VERSION}" ]]; then
   fi
 fi
 
+# ─── 0. Prune legacy AR install (from the pre-Virtual-Runtime POC stage) ─────
+#
+# The earlier `04-areg.sh` (pre-feat/fortify-coverage) installed AR into
+# the `agentregistry` namespace using the pmuir custom image and wired
+# /mcp/registry → agent-registry-backend → agentregistry.svc.
+# Leaving that around makes two AR installs coexist on the cluster.
+# Detect + prune it before installing the new shape.
+LEGACY_AR_NS="agentregistry"
+LEGACY_AR_RELEASE="agentregistry"
+LEGACY_ROUTE="areg-mcp-route"
+LEGACY_BACKEND="agent-registry-backend"
+
+if ${H} -n "${LEGACY_AR_NS}" list -o json 2>/dev/null \
+    | jq -e --arg r "${LEGACY_AR_RELEASE}" '.[] | select(.name == $r)' >/dev/null 2>&1; then
+  log "Removing legacy AR install (helm release ${LEGACY_AR_RELEASE} in ${LEGACY_AR_NS})"
+  ${H} -n "${LEGACY_AR_NS}" uninstall "${LEGACY_AR_RELEASE}" 2>&1 | tail -1
+  ${KC} delete ns "${LEGACY_AR_NS}" --wait=false 2>/dev/null && ok "Namespace ${LEGACY_AR_NS} terminating" || true
+fi
+
+# Remove legacy registry routing artifacts in the AGW namespace.
+if ${KC} -n "${AGW_NAMESPACE}" get httproute "${LEGACY_ROUTE}" >/dev/null 2>&1; then
+  log "Removing legacy /mcp/registry route + backend"
+  ${KC} -n "${AGW_NAMESPACE}" delete httproute "${LEGACY_ROUTE}" --ignore-not-found
+  ${KC} -n "${AGW_NAMESPACE}" delete agentgatewaybackend "${LEGACY_BACKEND}" --ignore-not-found
+  ok "Legacy route + backend deleted"
+fi
+
+# Drop legacy route from oidc-extauth.targetRefs (idempotent).
+if ${KC} -n "${AGW_NAMESPACE}" get enterpriseagentgatewaypolicy "${EXTAUTH_POLICY_NAME}" \
+    -o jsonpath='{.spec.targetRefs[*].name}' 2>/dev/null \
+    | grep -qw "${LEGACY_ROUTE}"; then
+  log "Removing ${LEGACY_ROUTE} from ${EXTAUTH_POLICY_NAME}.targetRefs"
+  ${KC} -n "${AGW_NAMESPACE}" get enterpriseagentgatewaypolicy "${EXTAUTH_POLICY_NAME}" -o json \
+    | jq --arg r "${LEGACY_ROUTE}" '.spec.targetRefs |= map(select(.name != $r))' \
+    | ${KC} apply -f - >/dev/null
+  ok "Legacy targetRef pruned"
+fi
+
 # ─── 1. Helm install AR Enterprise ───────────────────────────────────────────
 log "Installing AgentRegistry Enterprise (${AR_VERSION})"
 ${KC} create ns "${AR_NAMESPACE}" --dry-run=client -o yaml | ${KC} apply -f - >/dev/null
