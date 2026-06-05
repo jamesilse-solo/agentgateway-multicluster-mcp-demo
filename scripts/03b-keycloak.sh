@@ -281,6 +281,15 @@ kind: Service
 metadata:
   name: keycloak
   namespace: ${KEYCLOAK_NAMESPACE}
+  labels:
+    app: keycloak
+    # Expose the service cross-cluster through HBONE so spoke clusters
+    # can reach the JWKS endpoint at keycloak.keycloak.mesh.internal:8080
+    # — required when a spoke-cluster EAGP wires
+    # traffic.jwtAuthentication.mcp.jwks.remote against this issuer.
+    solo.io/service-scope: global
+  annotations:
+    networking.istio.io/traffic-distribution: Any
 spec:
   selector:
     app: keycloak
